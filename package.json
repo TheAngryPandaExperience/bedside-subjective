@@ -1,0 +1,19 @@
+{
+  "name": "bedside-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "mammoth": "^1.12.3",
+    "pdfjs-dist": "^5.7.284",
+    "tesseract.js": "^7.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+Duck, Donny (8074) Location: 2 304 1, Height: 70 Inches, Date of Admission (DOA): 09/26/2026
+Blood Pressure Summary
+10/01/2026 19:38 123/69 mmHg
+10/01/2026 06:27 140/80 mmHg
+O2 sats Summary
+10/01/2026 19:38 94% (Room Air)
+10/01/2026 06:27 92% (Room Air)
+Pulse Summary
+10/01/2026 19:38 67 bpm (Regular)
+10/01/2026 06:27 64 bpm (Regular)
+Respiration Summary
+10/01/2026 19:38 18 Breaths/min
+10/01/2026 06:27 16 Breaths/min
+Temperature Summary
+10/01/2026 19:38 98.9 °F (Forehead (non-
+contact))
+10/01/2026 06:27 98.6 °F (Forehead (non-
+contact))
