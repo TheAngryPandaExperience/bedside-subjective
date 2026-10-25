@@ -100,6 +100,7 @@ export function logLines(day, sends) {
 /** The daily summary file, with the send log (including this send) at the bottom. */
 export function buildSummary(day, send, settings = {}) {
   const lines = [`Date of service: ${formatDate(day.date)}`];
+  if (day.building) lines.push(`Building: ${day.building}`);
   if (settings.providerName) lines.push(`Provider: ${settings.providerName}`);
   lines.push('');
   day.patients.forEach((p, i) => {
@@ -113,5 +114,5 @@ export function buildSummary(day, send, settings = {}) {
 }
 
 export function summaryFilename(day) {
-  return `${day.date}_subjective.txt`;
+  return day.building ? `${day.date}_${day.building}_subjective.txt` : `${day.date}_subjective.txt`;
 }
