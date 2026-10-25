@@ -42,9 +42,17 @@ export function noteHash(p) {
 
 /** Which patients changed since the last send (by fingerprint). */
 export function changedSinceSend(day) {
-  const last = day.sends?.[day.sends.length - 1];
+  const last = [...(day.sends || [])].reverse().find((s) => s.hashes);
   if (!last) return day.patients.filter((p) => p.text).map((p) => p.mrn);
   return day.patients.filter((p) => p.text && last.hashes?.[p.mrn] !== noteHash(p)).map((p) => p.mrn);
+}
+
+/** Patients included in the last send who have since been deleted from the day. */
+export function removedSinceSend(day) {
+  const last = [...(day.sends || [])].reverse().find((s) => s.hashes);
+  if (!last) return [];
+  const names = last.names || {};
+  return Object.keys(last.hashes).filter((mrn) => !day.patients.some((p) => p.mrn === mrn)).map((mrn) => names[mrn] || mrn);
 }
 
 export function formatDate(iso) {
@@ -60,7 +68,7 @@ function stamp(date) {
 
 /** Make the next send-log entry (not yet saved). */
 export function nextSend(day, now = Date.now()) {
-  const n = (day.sends?.length || 0) + 1;
+  const n = (day.sends || []).filter((s) => s.kind !== 'deleted').length + 1;
   const included = day.patients.filter((p) => p.text);
   const changed = changedSinceSend(day);
   return {
@@ -69,19 +77,23 @@ export function nextSend(day, now = Date.now()) {
     kind: n === 1 ? 'original' : 'update',
     count: included.length,
     changed: n === 1 ? [] : changed,
+    removed: removedSinceSend(day),
     hashes: Object.fromEntries(included.map((p) => [p.mrn, noteHash(p)])),
+    names: Object.fromEntries(included.map((p) => [p.mrn, `${p.last}, ${p.first} (${p.mrn})`])),
   };
 }
 
 export function logLines(day, sends) {
   return sends.map((s) => {
+    if (s.kind === 'deleted') return `${stamp(s.at)}  Daily file deleted from computer`;
+    const removed = s.removed?.length ? `  Removed: ${s.removed.join('; ')}` : '';
     const who = s.kind === 'original'
       ? `${s.count} patient${s.count === 1 ? '' : 's'}`
       : `Changed: ${s.changed.map((mrn) => {
         const i = day.patients.findIndex((p) => p.mrn === mrn);
         return i < 0 ? mrn : `${i + 1}. ${day.patients[i].last}, ${day.patients[i].first}`;
       }).join('; ') || 'none'}`;
-    return `${stamp(s.at)}  Send #${s.n} (${s.kind})  ${who}`;
+    return `${stamp(s.at)}  Send #${s.n} (${s.kind})  ${who}${removed}`;
   });
 }
 

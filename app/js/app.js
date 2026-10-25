@@ -3,9 +3,12 @@
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
 import { renderTemplate, expandShortcut, patientLabel, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
-import { getDay, saveDay, getSettings, saveSettings, purgeOld, requestPersistence } from './store.js';
+import { getDay, saveDay, deleteDay, getSettings, saveSettings, purgeOld, requestPersistence } from './store.js';
 import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
+
+// Bump with every release so it's easy to confirm a phone has the latest copy.
+const APP_VERSION = 3;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -101,10 +104,15 @@ function renderDay() {
         <span class="name">${esc(patientLabel(p, i))}</span>
         <span class="meta">${[p.room, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}</span>
         <span class="status">${statusPill(p)}</span>
-      </button>`).join('')}</div>`
+      </button>`).join('')}</div>
+      <div style="margin-top:18px">
+        <button class="ghost danger" data-act="del-day">Delete this day</button>
+        <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
+          <button class="danger" data-act="del-day-yes">Delete day</button><button data-act="del-day-no">Keep</button></div>
+      </div>`
       : `<div class="empty card"><p><b>No patients for ${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>`}
     ${day.patients.length ? `<div class="bottom-bar"><div class="inner">
-      <div class="grow small muted">${documented} of ${day.patients.length} documented${day.sends.length ? ` · sent ${day.sends.length}×${changed ? ` · <b style="color:var(--amber)">${changed} changed since</b>` : ''}` : ''}</div>
+      <div class="grow small muted">${documented} of ${day.patients.length} documented${day.sends.length ? ` · sent ${day.sends.filter((s) => s.kind !== 'deleted').length}×${changed ? ` · <b style="color:var(--amber)">${changed} changed since</b>` : ''}` : ''}</div>
       ${day.sends.length ? '<button class="ghost" data-act="log">Log</button>' : ''}
       <button class="primary" data-act="send" ${documented ? '' : 'disabled'}>Send day</button>
     </div></div>` : ''}`;
@@ -319,7 +327,10 @@ function renderPatient() {
         <button class="primary grow" data-act="done">${p.status === 'done' ? 'Save and back to list' : 'Done with patient'}</button>
         <button data-act="copy">Copy</button>
         <button class="ghost danger" data-act="restart">Start over</button>
+        <button class="ghost danger" data-act="del-pt">Delete patient</button>
       </div>
+      <div id="del-pt-confirm" class="banner" hidden>Remove ${esc(p.last)}, ${esc(p.first)} and their note from this day? The list will renumber.
+        <button class="danger" data-act="del-pt-yes">Delete patient</button><button data-act="del-pt-no">Keep</button></div>
       <div id="restart-confirm" class="banner" hidden>Replace this note with a fresh template?
         <button class="danger" data-act="restart-yes">Replace</button><button data-act="restart-no">Keep</button></div>
     </div>`;
@@ -426,6 +437,24 @@ async function sendDay() {
   }
 }
 
+async function deleteFileOnComputer() {
+  try {
+    const res = await fetch(`${receiverBase()}api/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Token': settings.receiverToken || '' },
+      body: JSON.stringify({ date: day.date }),
+    });
+    if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token.' : `Receiver error ${res.status}`);
+    const { removed } = await res.json();
+    day.sends.push({ kind: 'deleted', at: Date.now() });
+    await saveDay(day);
+    toast(removed ? `Deleted ${removed} file${removed === 1 ? '' : 's'} from your computer` : 'No file for this day was on the computer');
+    render();
+  } catch (err) {
+    toast(err.message.startsWith('Receiver') || err.message.startsWith('The') ? err.message : 'Computer not reachable. Is Tailscale on and the receiver running?');
+  }
+}
+
 // ---------- log ----------
 
 function renderLog() {
@@ -446,6 +475,11 @@ function renderLog() {
     <h2>${esc(formatDate(day.date))}</h2>
     ${lines.length ? `<pre class="summary">${esc(lines.join('\n'))}</pre>` : '<p class="muted">Nothing sent yet for this day.</p>'}
     ${day.sends.length && changed.length ? `<p class="small" style="color:var(--amber)">${changed.length} patient(s) changed since the last send.</p>` : ''}
+    ${!fb && day.sends.some((s) => s.kind !== 'deleted') ? `<div style="margin:10px 0">
+      <button class="ghost danger" data-act="del-file">Delete this day's file from computer</button>
+      <div id="del-file-confirm" class="banner" hidden>Delete ${esc(day.date)}_subjective.txt and its saved copies from your computer? This can't be undone. Notes on this phone are kept.
+        <button class="danger" data-act="del-file-yes">Delete file</button><button data-act="del-file-no">Keep</button></div>
+    </div>` : ''}
     <h2>${fb ? 'File to send' : 'Preview of next send'}</h2>
     <pre class="summary">${esc(fb ? fb.content : buildSummary(day, nextSend(day), settings))}</pre>`;
 }
@@ -512,6 +546,7 @@ function renderSettings() {
 
       <h2>Reset</h2>
       <button class="danger" data-act="reset-phrases">Restore starter phrases</button>
+      <p class="small muted">App version ${APP_VERSION} · opened from ${esc(location.origin + location.pathname)}</p>
     </div>`;
 
   app.querySelector('#s-filter').addEventListener('input', (e) => {
@@ -610,6 +645,26 @@ app.addEventListener('click', async (e) => {
       history.back();
       break;
     case 'copy': copyText(app.querySelector('#note').value); break;
+    case 'del-day': case 'del-pt': case 'del-file': app.querySelector(`#${act}-confirm`).hidden = false; break;
+    case 'del-day-no': case 'del-pt-no': case 'del-file-no': app.querySelector(`#${act.slice(0, -3)}-confirm`).hidden = true; break;
+    case 'del-day-yes': {
+      const date = day.date;
+      await deleteDay(date);
+      day = await getDay(date);
+      toast(`Deleted ${formatDate(date)} from this phone`);
+      render();
+      break;
+    }
+    case 'del-pt-yes': {
+      clearTimeout(saveTimer);
+      document.getElementById('note')?.remove(); // so leaving the screen can't save this text onto the next patient
+      const [gone] = day.patients.splice(view.i, 1);
+      await saveDay(day);
+      toast(`Deleted ${gone.last}, ${gone.first}`);
+      history.back();
+      break;
+    }
+    case 'del-file-yes': await deleteFileOnComputer(); break;
     case 'restart': app.querySelector('#restart-confirm').hidden = false; break;
     case 'restart-no': app.querySelector('#restart-confirm').hidden = true; break;
     case 'restart-yes':
