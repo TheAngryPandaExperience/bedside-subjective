@@ -8,7 +8,7 @@ import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 5;
+const APP_VERSION = 6;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -120,9 +120,9 @@ function renderDay() {
       <div style="margin-top:18px">
         <button class="ghost danger" data-act="del-day">Delete this day</button>
         <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(day.building ? `${day.building}, ` : '')}${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
-          <button class="danger" data-act="del-day-yes">Delete day</button><button data-act="del-day-no">Keep</button></div>
+          <button class="danger" data-act="del-day-yes">Delete day</button>${day.building ? `<button class="danger" data-act="del-day-bld">Delete day and remove ${esc(day.building)}</button>` : ''}<button data-act="del-day-no">Keep</button></div>
       </div>`
-      : `<div class="empty card"><p><b>No patients for ${esc(day.building ? `${day.building} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>`}
+      : `<div class="empty card"><p><b>No patients for ${esc(day.building ? `${day.building} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>${day.building ? `<button class="ghost danger" data-act="del-bld" style="margin-top:12px">Remove ${esc(day.building)} from the building buttons</button>` : ''}`}
     ${day.patients.length ? `<div class="bottom-bar"><div class="inner">
       <div class="grow small muted">${documented} of ${day.patients.length} documented${day.sends.length ? ` · sent ${day.sends.filter((s) => s.kind !== 'deleted').length}×${changed ? ` · <b style="color:var(--amber)">${changed} changed since</b>` : ''}` : ''}</div>
       ${day.sends.length ? '<button class="ghost" data-act="log">Log</button>' : ''}
@@ -183,6 +183,15 @@ function renderImport() {
 }
 
 // How good a photo reading is, so the importer can retry with another layout when it is poor.
+// Take a building off the selector and switch to the next one. Its other days stay on the phone
+// (and come back if the building is added again) until they age out.
+async function removeBuilding(name, date) {
+  settings.buildings = settings.buildings.filter((b) => b !== name);
+  settings.currentBuilding = settings.buildings[0] || '';
+  await saveSettings(settings);
+  day = await getDay(date, settings.currentBuilding);
+}
+
 function judgeRoster(text) {
   const rows = parseRoster(text);
   const flagged = rows.filter((r) => r.flag).length;
@@ -677,6 +686,21 @@ app.addEventListener('click', async (e) => {
       await deleteDay(day);
       day = await getDay(date, building);
       toast(`Deleted ${building ? `${building}, ` : ''}${formatDate(date)} from this phone`);
+      render();
+      break;
+    }
+    case 'del-day-bld': {
+      const { date, building } = day;
+      await deleteDay(day);
+      await removeBuilding(building, date);
+      toast(`Deleted ${building}, ${formatDate(date)} and removed ${building}`);
+      render();
+      break;
+    }
+    case 'del-bld': {
+      const { building } = day;
+      await removeBuilding(building, day.date);
+      toast(`Removed ${building}. Add it again any time with + Building.`);
       render();
       break;
     }
