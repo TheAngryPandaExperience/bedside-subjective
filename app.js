@@ -8,7 +8,7 @@ import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 4;
+const APP_VERSION = 5;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -148,7 +148,7 @@ function renderImport() {
     </div>
     <div class="stack">
       <p class="muted small">${roster
-        ? 'A PDF exported from PCC reads exactly. Photos work too, and any MRN that might be misread is highlighted for you to check.'
+        ? 'A PDF exported from PCC reads exactly. For a photo, fill the frame with the list, hold steady and avoid glare. A long list can go in several photos: patients already added are skipped. Any MRN that might be misread is highlighted for you to check.'
         : 'Vitals are matched to your patients by MRN, then by name. Anything not matched stays blank.'}</p>
       <div class="row">
         <label class="btn grow" style="display:flex;align-items:center;justify-content:center;color:var(--ink)">Choose file
@@ -169,7 +169,7 @@ function renderImport() {
     prog.hidden = false;
     app.querySelector('#progtext').textContent = `Reading ${file.name}…`;
     try {
-      const text = await fileToText(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; });
+      const text = await fileToText(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; }, view.kind === 'roster' ? judgeRoster : judgeVitals);
       app.querySelector('#raw').value = text;
       showParsed(text);
     } catch (err) {
@@ -180,6 +180,17 @@ function renderImport() {
   };
   app.querySelector('#file').addEventListener('change', (e) => handleFile(e.target.files[0]));
   app.querySelector('#photo').addEventListener('change', (e) => handleFile(e.target.files[0]));
+}
+
+// How good a photo reading is, so the importer can retry with another layout when it is poor.
+function judgeRoster(text) {
+  const rows = parseRoster(text);
+  const flagged = rows.filter((r) => r.flag).length;
+  return { value: rows.length * 2 - flagged * 3, done: rows.length >= 3 && !flagged };
+}
+function judgeVitals(text) {
+  const n = parseVitals(text).length;
+  return { value: n, done: n >= 3 };
 }
 
 function showParsed(text) {
