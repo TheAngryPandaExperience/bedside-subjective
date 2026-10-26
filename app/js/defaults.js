@@ -77,5 +77,7 @@ export const DEFAULT_SETTINGS = {
   retentionDays: 7,
   receiverToken: '',
   receiverUrl: '',
+  buildings: [],
+  currentBuilding: '',
   providerName: '',
 };

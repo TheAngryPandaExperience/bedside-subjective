@@ -8,7 +8,7 @@ import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 3;
+const APP_VERSION = 5;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -18,6 +18,8 @@ let day;
 let view = { name: 'day' };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+// Building names become folder names on the computer, so keep them to safe characters.
+const cleanBuilding = (s) => String(s).replace(/[^A-Za-z0-9 _.\-]/g, '').trim().slice(0, 60);
 const todayIso = () => new Date().toLocaleDateString('en-CA');
 // Blank receiver address = the computer that served the app. Otherwise e.g. https://your-pc.tail1234.ts.net/
 const receiverBase = (url = settings.receiverUrl) => (url ? url.replace(/\/?$/, '/') : '');
@@ -60,7 +62,8 @@ async function boot() {
   purgeOld(settings.retentionDays);
   let date = todayIso();
   try { date = sessionStorage.getItem('date') || date; } catch { /* private mode */ }
-  day = await getDay(date);
+  if (settings.buildings.length && !settings.buildings.includes(settings.currentBuilding)) settings.currentBuilding = settings.buildings[0];
+  day = await getDay(date, settings.currentBuilding);
   render();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
@@ -92,6 +95,15 @@ function renderDay() {
       ${installPrompt ? 'Install this app on your phone so it opens from the home screen and works offline.'
         : 'To install: tap the Share button, then <b>Add to Home Screen</b>.'}
       ${installPrompt ? '<button class="primary" data-act="install">Install app</button>' : ''}</div>` : ''}
+    <div class="buildings" role="group" aria-label="Building">
+      ${settings.buildings.map((b) => `<button class="bchip ${b === day.building ? 'on' : ''}" data-act="building" data-b="${esc(b)}" aria-pressed="${b === day.building}">${esc(b)}</button>`).join('')}
+      <button class="bchip add" data-act="add-building">+ Building</button>
+    </div>
+    <div id="add-building-form" class="row" style="margin-bottom:12px" hidden>
+      <input id="new-building" placeholder="Building name, e.g. Wellsprings" autocomplete="off" style="flex:1">
+      <button class="primary" data-act="save-building">Add</button>
+    </div>
+    ${!settings.buildings.length ? '<p class="small muted" style="margin:0 0 12px">Add the buildings you see patients at. Each building keeps its own patient list and its own daily file.</p>' : ''}
     <div class="row" style="margin-bottom:12px">
       <label class="grow">Date of service<input type="date" id="date" value="${esc(day.date)}"></label>
     </div>
@@ -107,10 +119,10 @@ function renderDay() {
       </button>`).join('')}</div>
       <div style="margin-top:18px">
         <button class="ghost danger" data-act="del-day">Delete this day</button>
-        <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
+        <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(day.building ? `${day.building}, ` : '')}${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
           <button class="danger" data-act="del-day-yes">Delete day</button><button data-act="del-day-no">Keep</button></div>
       </div>`
-      : `<div class="empty card"><p><b>No patients for ${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>`}
+      : `<div class="empty card"><p><b>No patients for ${esc(day.building ? `${day.building} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>`}
     ${day.patients.length ? `<div class="bottom-bar"><div class="inner">
       <div class="grow small muted">${documented} of ${day.patients.length} documented${day.sends.length ? ` · sent ${day.sends.filter((s) => s.kind !== 'deleted').length}×${changed ? ` · <b style="color:var(--amber)">${changed} changed since</b>` : ''}` : ''}</div>
       ${day.sends.length ? '<button class="ghost" data-act="log">Log</button>' : ''}
@@ -119,7 +131,7 @@ function renderDay() {
 
   app.querySelector('#date').addEventListener('change', async (e) => {
     if (!e.target.value) return;
-    day = await getDay(e.target.value);
+    day = await getDay(e.target.value, day.building);
     try { sessionStorage.setItem('date', day.date); } catch { /* ignore */ }
     render();
   });
@@ -136,7 +148,7 @@ function renderImport() {
     </div>
     <div class="stack">
       <p class="muted small">${roster
-        ? 'A PDF exported from PCC reads exactly. Photos work too, and any MRN that might be misread is highlighted for you to check.'
+        ? 'A PDF exported from PCC reads exactly. For a photo, fill the frame with the list, hold steady and avoid glare. A long list can go in several photos: patients already added are skipped. Any MRN that might be misread is highlighted for you to check.'
         : 'Vitals are matched to your patients by MRN, then by name. Anything not matched stays blank.'}</p>
       <div class="row">
         <label class="btn grow" style="display:flex;align-items:center;justify-content:center;color:var(--ink)">Choose file
@@ -157,7 +169,7 @@ function renderImport() {
     prog.hidden = false;
     app.querySelector('#progtext').textContent = `Reading ${file.name}…`;
     try {
-      const text = await fileToText(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; });
+      const text = await fileToText(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; }, view.kind === 'roster' ? judgeRoster : judgeVitals);
       app.querySelector('#raw').value = text;
       showParsed(text);
     } catch (err) {
@@ -168,6 +180,17 @@ function renderImport() {
   };
   app.querySelector('#file').addEventListener('change', (e) => handleFile(e.target.files[0]));
   app.querySelector('#photo').addEventListener('change', (e) => handleFile(e.target.files[0]));
+}
+
+// How good a photo reading is, so the importer can retry with another layout when it is poor.
+function judgeRoster(text) {
+  const rows = parseRoster(text);
+  const flagged = rows.filter((r) => r.flag).length;
+  return { value: rows.length * 2 - flagged * 3, done: rows.length >= 3 && !flagged };
+}
+function judgeVitals(text) {
+  const n = parseVitals(text).length;
+  return { value: n, done: n >= 3 };
 }
 
 function showParsed(text) {
@@ -191,7 +214,7 @@ function showParsed(text) {
           ${r.flag ? `<div class="flag">${esc(r.flag)}</div>` : ''}
         </div>`).join('')}</div>
       <p class="small muted" style="margin-top:10px">${day.patients.length ? 'Patients already on today\'s list are skipped.' : ''}</p>
-      <button class="primary" data-act="add-roster" style="width:100%">Add to ${esc(formatDate(day.date))}</button>`;
+      <button class="primary" data-act="add-roster" style="width:100%">Add to ${esc(day.building ? `${day.building} · ` : '')}${esc(formatDate(day.date))}</button>`;
   } else {
     const vit = parseVitals(text);
     const matches = matchVitals(day.patients, vit);
@@ -424,7 +447,7 @@ async function sendDay() {
     const res = await fetch(`${receiverBase()}api/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Token': settings.receiverToken || '' },
-      body: JSON.stringify({ date: day.date, sendNo: send.n, filename, content, logLine }),
+      body: JSON.stringify({ date: day.date, building: day.building || '', sendNo: send.n, filename, content, logLine }),
     });
     if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token. Check Settings.' : `Receiver error ${res.status}`);
     day.sends.push(send);
@@ -442,7 +465,7 @@ async function deleteFileOnComputer() {
     const res = await fetch(`${receiverBase()}api/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Token': settings.receiverToken || '' },
-      body: JSON.stringify({ date: day.date }),
+      body: JSON.stringify({ date: day.date, building: day.building || '' }),
     });
     if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token.' : `Receiver error ${res.status}`);
     const { removed } = await res.json();
@@ -472,12 +495,12 @@ function renderLog() {
         ${navigator.canShare ? '<button class="grow" data-act="share">Share file (Taildrop)</button>' : ''}
         <button class="grow" data-act="copy-summary">Copy text</button>
       </div>` : ''}
-    <h2>${esc(formatDate(day.date))}</h2>
+    <h2>${esc(day.building ? `${day.building} · ` : '')}${esc(formatDate(day.date))}</h2>
     ${lines.length ? `<pre class="summary">${esc(lines.join('\n'))}</pre>` : '<p class="muted">Nothing sent yet for this day.</p>'}
     ${day.sends.length && changed.length ? `<p class="small" style="color:var(--amber)">${changed.length} patient(s) changed since the last send.</p>` : ''}
     ${!fb && day.sends.some((s) => s.kind !== 'deleted') ? `<div style="margin:10px 0">
       <button class="ghost danger" data-act="del-file">Delete this day's file from computer</button>
-      <div id="del-file-confirm" class="banner" hidden>Delete ${esc(day.date)}_subjective.txt and its saved copies from your computer? This can't be undone. Notes on this phone are kept.
+      <div id="del-file-confirm" class="banner" hidden>Delete ${esc(summaryFilename(day))} and its saved copies from your computer? This can't be undone. Notes on this phone are kept.
         <button class="danger" data-act="del-file-yes">Delete file</button><button data-act="del-file-no">Keep</button></div>
     </div>` : ''}
     <h2>${fb ? 'File to send' : 'Preview of next send'}</h2>
@@ -508,6 +531,7 @@ function renderSettings() {
       <button class="primary" data-act="save-settings">Save</button>
     </div>
     <div class="stack">
+      <label>Buildings, one per line (each gets its own patient list and daily file)<textarea id="s-buildings" rows="3">${esc(s.buildings.join('\n'))}</textarea></label>
       <label>Your name (printed on the daily file)<input id="s-provider" value="${esc(s.providerName)}"></label>
 
       <h2>Note template</h2>
@@ -586,6 +610,7 @@ function readSettingsForm() {
   return {
     ...settings,
     providerName: q('#s-provider').value.trim(),
+    buildings: [...new Set(q('#s-buildings').value.split('\n').map(cleanBuilding).filter(Boolean))],
     template: q('#s-template').value,
     locations: [...app.querySelectorAll('#s-locs .phrase-row')].map((r) => ({
       key: r.querySelector('.k').value.trim(), text: r.querySelector('.t').value.trim(), label: r.querySelector('.grp').value.trim(),
@@ -648,10 +673,10 @@ app.addEventListener('click', async (e) => {
     case 'del-day': case 'del-pt': case 'del-file': app.querySelector(`#${act}-confirm`).hidden = false; break;
     case 'del-day-no': case 'del-pt-no': case 'del-file-no': app.querySelector(`#${act.slice(0, -3)}-confirm`).hidden = true; break;
     case 'del-day-yes': {
-      const date = day.date;
-      await deleteDay(date);
-      day = await getDay(date);
-      toast(`Deleted ${formatDate(date)} from this phone`);
+      const { date, building } = day;
+      await deleteDay(day);
+      day = await getDay(date, building);
+      toast(`Deleted ${building ? `${building}, ` : ''}${formatDate(date)} from this phone`);
       render();
       break;
     }
@@ -665,6 +690,26 @@ app.addEventListener('click', async (e) => {
       break;
     }
     case 'del-file-yes': await deleteFileOnComputer(); break;
+    case 'building':
+      settings.currentBuilding = b.dataset.b;
+      await saveSettings(settings);
+      day = await getDay(day.date, settings.currentBuilding);
+      render();
+      break;
+    case 'add-building':
+      app.querySelector('#add-building-form').hidden = false;
+      app.querySelector('#new-building').focus();
+      break;
+    case 'save-building': {
+      const name = cleanBuilding(app.querySelector('#new-building').value);
+      if (!name) break;
+      if (!settings.buildings.includes(name)) settings.buildings = [...settings.buildings, name];
+      settings.currentBuilding = name;
+      await saveSettings(settings);
+      day = await getDay(day.date, name);
+      render();
+      break;
+    }
     case 'restart': app.querySelector('#restart-confirm').hidden = false; break;
     case 'restart-no': app.querySelector('#restart-confirm').hidden = true; break;
     case 'restart-yes':

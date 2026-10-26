@@ -46,6 +46,12 @@ def load_config(args):
     return cfg
 
 
+def safe_building(name):
+    """A building name as a safe folder name: letters, digits, spaces, dash, underscore, period."""
+    cleaned = re.sub(r"[^A-Za-z0-9 _.\-]", "", str(name)).strip(" .")
+    return cleaned[:60]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BedsideReceiver/1"
     cfg = {}
@@ -117,6 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data = json.loads(self.rfile.read(length))
             date = data["date"]
+            building = safe_building(data.get("building", ""))
             send_no = int(data["sendNo"])
             content = str(data["content"])
             log_line = str(data.get("logLine", ""))
@@ -125,15 +132,17 @@ class Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             return self._json(400, {"error": "bad date"})
 
-        out = Path(self.cfg["out"])
+        root = Path(self.cfg["out"])
+        out = root / building if building else root
         (out / "sent").mkdir(parents=True, exist_ok=True)
-        latest = out / f"{date}_subjective.txt"
-        archive = out / "sent" / f"{date}_send-{send_no:02d}.txt"
+        stem = f"{date}_{building}" if building else date
+        latest = out / f"{stem}_subjective.txt"
+        archive = out / "sent" / f"{stem}_send-{send_no:02d}.txt"
         latest.write_text(content, encoding="utf-8", newline="\r\n" if sys.platform == "win32" else "\n")
         archive.write_text(content, encoding="utf-8")
         received = datetime.now().strftime("%m/%d/%Y %H:%M")
-        with open(out / "send-log.txt", "a", encoding="utf-8") as f:
-            f.write(f"{log_line}  -> {latest.name} (received {received})\n")
+        with open(root / "send-log.txt", "a", encoding="utf-8") as f:
+            f.write(f"{log_line}  -> {latest.relative_to(root)} (received {received})\n")
         print(f"[{received}] Saved {latest} (send #{send_no})")
         self._json(200, {"ok": True, "file": latest.name})
 
@@ -155,17 +164,21 @@ class Handler(BaseHTTPRequestHandler):
         date = str(data.get("date", ""))
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             return self._json(400, {"error": "bad date"})
-        out = Path(self.cfg["out"])
-        targets = [out / f"{date}_subjective.txt", *sorted((out / "sent").glob(f"{date}_send-*.txt"))]
+        building = safe_building(data.get("building", ""))
+        root = Path(self.cfg["out"])
+        out = root / building if building else root
+        stem = f"{date}_{building}" if building else date
+        targets = [out / f"{stem}_subjective.txt", *sorted((out / "sent").glob(f"{stem}_send-*.txt"))]
         removed = 0
         for t in targets:
             if t.is_file():
                 t.unlink()
                 removed += 1
         stamp = datetime.now().strftime("%m/%d/%Y %H:%M")
-        with open(out / "send-log.txt", "a", encoding="utf-8") as f:
-            f.write(f"{stamp}  Deleted {removed} file(s) for {date}\n")
-        print(f"[{stamp}] Deleted {removed} file(s) for {date}")
+        where = f"{building} {date}" if building else date
+        with open(root / "send-log.txt", "a", encoding="utf-8") as f:
+            f.write(f"{stamp}  Deleted {removed} file(s) for {where}\n")
+        print(f"[{stamp}] Deleted {removed} file(s) for {where}")
         self._json(200, {"ok": True, "removed": removed})
 
 
