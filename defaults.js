@@ -81,3 +81,21 @@ export const DEFAULT_SETTINGS = {
   currentBuilding: '',
   providerName: '',
 };
+
+// Quick details on each patient. All optional; filled ones are added to the end of the note.
+// A preset is used as written; anything typed gets the prefix (e.g. "Per nursing, ...").
+export const DETAILS = [
+  { key: 'overnight', label: 'Overnight', prefix: 'Overnight: ',
+    presets: ['No acute events overnight', 'Slept well overnight', 'Poor sleep overnight'] },
+  { key: 'nursing', label: 'Nursing', prefix: 'Per nursing, ',
+    presets: ['No new concerns per nursing'] },
+  { key: 'therapy', label: 'Therapy', prefix: 'Therapy: ', unit: 'ft',
+    numberText: (v) => `Pt ambulated ${v} ft with therapy`,
+    quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
+  { key: 'meal', label: 'Meal %', prefix: 'Meals: ', unit: '%',
+    numberText: (v) => `Pt eating ${v}% of meals`,
+    quick: ['0', '25', '50', '75', '100'], presets: [] },
+  { key: 'pain', label: 'Pain' },
+  { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
+  { key: 'new', label: 'New', prefix: 'New: ', presets: [] },
+];

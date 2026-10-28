@@ -140,3 +140,19 @@ pre.summary { white-space: pre-wrap; font-size: .85rem; background: var(--surfac
 .bchip { min-height: 40px; padding: 6px 14px; border-radius: 99px; font-weight: 700; background: var(--surface); }
 .bchip.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .bchip.add { color: var(--accent); border-style: dashed; font-weight: 400; }
+
+/* Quick details */
+.details { margin-bottom: 10px; }
+.dchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dchip { min-height: 38px; padding: 4px 12px; border-radius: 99px; font-size: .88rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+.dchip small { color: var(--muted); font-weight: 400; }
+.dchip.filled { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 700; }
+.dchip.open { outline: 2px solid var(--accent); }
+.dpanel { margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); display: grid; gap: 8px; }
+.dkeys { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
+.dkeys button { min-height: 46px; font-weight: 700; }
+.dkeys button.on, .dpreset.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.dpreset { text-align: left; }
+.dnav { justify-content: flex-end; }
+.detail-preview { margin: 6px 0 10px; color: var(--ink); }
+.detail-preview:empty { display: none; }

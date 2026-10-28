@@ -1,6 +1,7 @@
 // Pure note logic: template filling, shortcut expansion, daily summary and send log.
 
 import { formatVitals } from './parsers.js';
+import { DETAILS } from './defaults.js';
 
 /** Fill the template for one patient. Pain null = skipped (the pain sentence is dropped). */
 export function renderTemplate(settings, { locationText, pain, vitals }) {
@@ -32,9 +33,40 @@ export function patientLabel(p, i) {
   return `${i + 1}. ${p.last}, ${p.first} (${p.mrn}):`;
 }
 
+function sentence(s) {
+  const t = String(s).trim().replace(/[.\s]+$/, '');
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}.` : '';
+}
+
+/** The quick details as sentences, in the order of DETAILS. Empty ones are left out. */
+export function detailSentences(p) {
+  const f = p.fields || {};
+  const out = [];
+  for (const d of DETAILS) {
+    if (d.key === 'pain') {
+      // Pain normally lives in the template sentence; add it here only if the note has none.
+      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.push(`Pain ${p.pain}/10.`);
+      continue;
+    }
+    const v = String(f[d.key] ?? '').trim();
+    if (!v) continue;
+    if (d.quote) out.push(`Pt states "${v.replace(/^"|"$/g, '')}".`);
+    else if (d.presets.includes(v)) out.push(sentence(v));
+    else if (d.numberText && /^\d+(\.\d+)?$/.test(v)) out.push(sentence(d.numberText(v)));
+    else out.push(sentence(d.prefix + v));
+  }
+  return out;
+}
+
+/** The note as it goes out: the typed text followed by the quick details. */
+export function fullNote(p) {
+  return [String(p.text || '').trim(), ...detailSentences(p)].filter(Boolean).join(' ');
+}
+
 /** The same text as a fingerprint, so an edit after sending can be detected. */
 export function noteHash(p) {
-  const s = `${p.mrn}|${p.text || ''}`;
+  // Notes without details hash as before, so earlier sends don't all look changed.
+  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}`;
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h.toString(36);
@@ -105,7 +137,7 @@ export function buildSummary(day, send, settings = {}) {
   lines.push('');
   day.patients.forEach((p, i) => {
     lines.push(patientLabel(p, i));
-    lines.push(p.text ? p.text.trim() : '(not documented)');
+    lines.push(p.text ? fullNote(p) : '(not documented)');
     lines.push('');
   });
   lines.push('---- Send log ----');
