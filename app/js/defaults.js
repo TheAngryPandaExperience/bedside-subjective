@@ -99,3 +99,9 @@ export const DETAILS = [
     quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
 ];
+
+// Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
+// "Pain 6/10 to right knee and hip, aching and sharp."
+export const PAIN_SIDES = ['left', 'right', 'bilateral'];
+export const PAIN_SITES = ['lower back', 'knee', 'hip', 'shoulder', 'neck', 'leg', 'foot', 'abdomen', 'incision site', 'generalized'];
+export const PAIN_TYPES = ['aching', 'sharp', 'dull', 'burning', 'throbbing', 'stabbing', 'shooting', 'cramping', 'tender'];

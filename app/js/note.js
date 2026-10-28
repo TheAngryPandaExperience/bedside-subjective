@@ -3,11 +3,25 @@
 import { formatVitals } from './parsers.js';
 import { DETAILS } from './defaults.js';
 
+const joinAnd = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
+
+/** "Pain 6/10 to right knee and hip, aching" (no final period), or '' when pain was skipped. */
+export function painPhrase(p) {
+  if (p.pain == null) return '';
+  const sites = p.painSite || [];
+  const types = p.painType || [];
+  let s = `Pain ${p.pain}/10`;
+  if (sites.length) s += ` to ${p.painSide ? `${p.painSide} ` : ''}${joinAnd(sites)}`;
+  if (types.length) s += `, ${joinAnd(types)}`;
+  return s;
+}
+
 /** Fill the template for one patient. Pain null = skipped (the pain sentence is dropped). */
-export function renderTemplate(settings, { locationText, pain, vitals }) {
+export function renderTemplate(settings, { locationText, pain, vitals, painText }) {
   const vit = formatVitals(vitals, settings);
   let t = settings.template;
   if (pain == null) t = t.replace(/Pain \{pain\}\/10\.\s*/, '');
+  else if (painText) t = t.replace('Pain {pain}/10', painText);
   return t
     .replace('{location}', locationText || '')
     .replace('{vitals}', vit ? `${vit}; ` : ' ')
@@ -45,7 +59,7 @@ function detailMap(p) {
   for (const d of DETAILS) {
     if (d.key === 'pain') {
       // Pain normally lives in the template sentence; add it here only if the note has none.
-      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.pain = `Pain ${p.pain}/10.`;
+      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.pain = `${painPhrase(p)}.`;
       continue;
     }
     const v = String(f[d.key] ?? '').trim();

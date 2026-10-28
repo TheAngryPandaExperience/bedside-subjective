@@ -2,13 +2,13 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
 import { getDay, saveDay, deleteDay, getSettings, saveSettings, purgeOld, requestPersistence } from './store.js';
 import { fileToText } from './importers.js';
-import { DEFAULT_SETTINGS, DETAILS } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -311,6 +311,7 @@ async function applyVitals() {
 const current = () => day.patients[view.i];
 let saveTimer;
 let refreshPreview = () => {};
+let redrawDetails = () => {};
 
 function scheduleSave() {
   clearTimeout(saveTimer);
@@ -349,18 +350,22 @@ function renderPatient() {
   }
   if (!p.text && p.pain === undefined) {
     const keys = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const pick = view.painPick;
+    const key = (k) => `<button data-act="pain-pick" data-v="${k}" ${pick === k ? 'style="background:var(--accent);color:var(--accent-ink);border-color:transparent"' : ''}>${k}</button>`;
     app.innerHTML = `${header}<div class="prompt-title">Pain today, out of 10</div>
       <div class="keypad">
-        ${keys.map((k) => `<button data-act="pain" data-v="${k}">${k}</button>`).join('')}
+        ${keys.map(key).join('')}
         <button class="skip" data-act="pain" data-v="">Skip</button>
-        <button data-act="pain" data-v="0">0</button>
-        <button data-act="pain" data-v="10">10</button>
-      </div>`;
+        ${key(0)}${key(10)}
+      </div>
+      ${painExtras(p)}
+      <button class="primary" data-act="pain" data-v="${pick ?? ''}" ${pick == null ? 'disabled' : ''} style="width:100%;margin-top:14px;min-height:52px">
+        ${pick == null ? 'Tap a number' : `Continue with ${esc(painPhrase({ ...p, pain: pick }))}`}</button>`;
     return;
   }
   if (!p.text) {
     const loc = settings.locations[p.location];
-    p.text = renderTemplate(settings, { locationText: loc?.text, pain: p.pain, vitals: p.vitals }) + ' ';
+    p.text = renderTemplate(settings, { locationText: loc?.text, pain: p.pain, vitals: p.vitals, painText: painPhrase(p) }) + ' ';
     p.status = 'progress';
     p.fresh = true;
     saveDay(day);
@@ -435,7 +440,7 @@ function mountDetails(p, openKey) {
     if (d.key === 'pain') {
       return `<div class="dpanel"><div class="dkeys">
         ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => `<button data-dv="${k}" class="${p.pain === k ? 'on' : ''}">${k}</button>`).join('')}
-        </div>${panelNav(next)}</div>`;
+        </div>${painExtras(p)}${panelNav(next)}</div>`;
     }
     return `<div class="dpanel">
       ${d.quick ? `<div class="dkeys">${d.quick.map((q) => `<button data-dv="${esc(q)}" class="${p.fields[d.key] === q ? 'on' : ''}">${esc(q)}${d.unit === '%' ? '%' : ''}</button>`).join('')}</div>` : ''}
@@ -480,16 +485,36 @@ function mountDetails(p, openKey) {
   draw();
   preview();
   refreshPreview = preview;
+  redrawDetails = () => { if (box.isConnected) { draw(); preview(); } };
 }
 
-// Change the pain score, and the "Pain N/10." sentence in the note if there is one.
+// Change the pain score, and the pain sentence in the note if there is one.
 function setPain(p, v) {
   p.pain = v;
+  syncPainSentence(p);
+}
+
+// Rewrite "Pain N/10 ..." in the open note from the current score, area and type.
+function syncPainSentence(p) {
   const ta = document.getElementById('note');
-  if (ta) {
-    const next = v == null ? ta.value.replace(/Pain \d+\/10\.\s*/, '') : ta.value.replace(/Pain \d+\/10/, `Pain ${v}/10`);
-    if (next !== ta.value) { ta.value = next; p.text = next; }
-  }
+  if (!ta) return;
+  const next = p.pain == null
+    ? ta.value.replace(/Pain \d+\/10[^.]*\.\s*/, '')
+    : ta.value.replace(/Pain \d+\/10[^.]*/, painPhrase(p));
+  if (next !== ta.value) { ta.value = next; p.text = next; }
+}
+
+// Optional area (side + site) and type buttons, shared by the pain screen and the Pain detail.
+function painExtras(p) {
+  const grid = (extra = '') => `style="grid-template-columns:repeat(auto-fill,minmax(96px,1fr));${extra}"`;
+  const chips = (act, list, on) => list.map((x) => `<button data-act="${act}" data-v="${esc(x)}" class="${on(x) ? 'on' : ''}">${esc(x)}</button>`).join('');
+  return `<div class="pain-extras">
+    <div class="small muted" style="margin:14px 0 6px">Area (optional)</div>
+    <div class="dkeys" ${grid()}>${chips('pain-side', PAIN_SIDES, (x) => p.painSide === x)}</div>
+    <div class="dkeys" ${grid('margin-top:6px')}>${chips('pain-site', PAIN_SITES, (x) => (p.painSite || []).includes(x))}</div>
+    <div class="small muted" style="margin:12px 0 6px">Type (optional)</div>
+    <div class="dkeys" ${grid()}>${chips('pain-type', PAIN_TYPES, (x) => (p.painType || []).includes(x))}</div>
+  </div>`;
 }
 
 function insertAtCursor(text) {
@@ -780,7 +805,21 @@ app.addEventListener('click', async (e) => {
     case 'apply-vitals': await applyVitals(); break;
     case 'open': go({ name: 'patient', i: +b.dataset.i }); break;
     case 'loc': p.location = +b.dataset.i; await saveDay(day); render(); break;
-    case 'pain': p.pain = b.dataset.v === '' ? null : +b.dataset.v; await saveDay(day); render(); break;
+    case 'pain': p.pain = b.dataset.v === '' ? null : +b.dataset.v; delete view.painPick; await saveDay(day); render(); break;
+    case 'pain-pick': view.painPick = +b.dataset.v; render(); break;
+    case 'pain-side': case 'pain-site': case 'pain-type': {
+      const v = b.dataset.v;
+      if (act === 'pain-side') p.painSide = p.painSide === v ? '' : v;
+      else {
+        const field = act === 'pain-site' ? 'painSite' : 'painType';
+        const list = p[field] || [];
+        p[field] = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+      }
+      syncPainSentence(p);
+      await saveDay(day);
+      if (document.getElementById('note')) redrawDetails(); else render();
+      break;
+    }
     case 'done':
       await flushNote();
       p.status = 'done';
@@ -868,6 +907,9 @@ app.addEventListener('click', async (e) => {
       p.location = undefined;
       p.pain = undefined;
       p.fields = {};
+      p.painSite = [];
+      p.painType = [];
+      p.painSide = '';
       p.status = 'new';
       await saveDay(day);
       render();
