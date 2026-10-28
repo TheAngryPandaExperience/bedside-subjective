@@ -1,0 +1,150 @@
+// Pure note logic: template filling, shortcut expansion, daily summary and send log.
+
+import { formatVitals } from './parsers.js';
+import { DETAILS } from './defaults.js';
+
+/** Fill the template for one patient. Pain null = skipped (the pain sentence is dropped). */
+export function renderTemplate(settings, { locationText, pain, vitals }) {
+  const vit = formatVitals(vitals, settings);
+  let t = settings.template;
+  if (pain == null) t = t.replace(/Pain \{pain\}\/10\.\s*/, '');
+  return t
+    .replace('{location}', locationText || '')
+    .replace('{vitals}', vit ? `${vit}; ` : ' ')
+    .replace('{pain}', pain ?? '')
+    .replace(/^\s+/, '');
+}
+
+/**
+ * If the word just before the cursor is a shortcut, return the replacement.
+ * `before` is the text up to the cursor, ending with the space or punctuation just typed.
+ */
+export function expandShortcut(before, phrases) {
+  const m = before.match(/(^|\s)(\S+)([\s,;:])$/);
+  if (!m) return null;
+  const word = m[2];
+  const hit = phrases.find((p) => p.key === word) || phrases.find((p) => p.key.toLowerCase() === word.toLowerCase());
+  if (!hit) return null;
+  const start = before.length - word.length - 1;
+  return { start, end: before.length, text: hit.text + m[3] };
+}
+
+export function patientLabel(p, i) {
+  return `${i + 1}. ${p.last}, ${p.first} (${p.mrn}):`;
+}
+
+function sentence(s) {
+  const t = String(s).trim().replace(/[.\s]+$/, '');
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}.` : '';
+}
+
+/** The quick details as sentences, in the order of DETAILS. Empty ones are left out. */
+export function detailSentences(p) {
+  const f = p.fields || {};
+  const out = [];
+  for (const d of DETAILS) {
+    if (d.key === 'pain') {
+      // Pain normally lives in the template sentence; add it here only if the note has none.
+      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.push(`Pain ${p.pain}/10.`);
+      continue;
+    }
+    const v = String(f[d.key] ?? '').trim();
+    if (!v) continue;
+    if (d.quote) out.push(`Pt states "${v.replace(/^"|"$/g, '')}".`);
+    else if (d.presets.includes(v)) out.push(sentence(v));
+    else if (d.numberText && /^\d+(\.\d+)?$/.test(v)) out.push(sentence(d.numberText(v)));
+    else out.push(sentence(d.prefix + v));
+  }
+  return out;
+}
+
+/** The note as it goes out: the typed text followed by the quick details. */
+export function fullNote(p) {
+  return [String(p.text || '').trim(), ...detailSentences(p)].filter(Boolean).join(' ');
+}
+
+/** The same text as a fingerprint, so an edit after sending can be detected. */
+export function noteHash(p) {
+  // Notes without details hash as before, so earlier sends don't all look changed.
+  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}`;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h.toString(36);
+}
+
+/** Which patients changed since the last send (by fingerprint). */
+export function changedSinceSend(day) {
+  const last = [...(day.sends || [])].reverse().find((s) => s.hashes);
+  if (!last) return day.patients.filter((p) => p.text).map((p) => p.mrn);
+  return day.patients.filter((p) => p.text && last.hashes?.[p.mrn] !== noteHash(p)).map((p) => p.mrn);
+}
+
+/** Patients included in the last send who have since been deleted from the day. */
+export function removedSinceSend(day) {
+  const last = [...(day.sends || [])].reverse().find((s) => s.hashes);
+  if (!last) return [];
+  const names = last.names || {};
+  return Object.keys(last.hashes).filter((mrn) => !day.patients.some((p) => p.mrn === mrn)).map((mrn) => names[mrn] || mrn);
+}
+
+export function formatDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${m}/${d}/${y}`;
+}
+
+function stamp(date) {
+  const d = new Date(date);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Make the next send-log entry (not yet saved). */
+export function nextSend(day, now = Date.now()) {
+  const n = (day.sends || []).filter((s) => s.kind !== 'deleted').length + 1;
+  const included = day.patients.filter((p) => p.text);
+  const changed = changedSinceSend(day);
+  return {
+    n,
+    at: now,
+    kind: n === 1 ? 'original' : 'update',
+    count: included.length,
+    changed: n === 1 ? [] : changed,
+    removed: removedSinceSend(day),
+    hashes: Object.fromEntries(included.map((p) => [p.mrn, noteHash(p)])),
+    names: Object.fromEntries(included.map((p) => [p.mrn, `${p.last}, ${p.first} (${p.mrn})`])),
+  };
+}
+
+export function logLines(day, sends) {
+  return sends.map((s) => {
+    if (s.kind === 'deleted') return `${stamp(s.at)}  Daily file deleted from computer`;
+    const removed = s.removed?.length ? `  Removed: ${s.removed.join('; ')}` : '';
+    const who = s.kind === 'original'
+      ? `${s.count} patient${s.count === 1 ? '' : 's'}`
+      : `Changed: ${s.changed.map((mrn) => {
+        const i = day.patients.findIndex((p) => p.mrn === mrn);
+        return i < 0 ? mrn : `${i + 1}. ${day.patients[i].last}, ${day.patients[i].first}`;
+      }).join('; ') || 'none'}`;
+    return `${stamp(s.at)}  Send #${s.n} (${s.kind})  ${who}${removed}`;
+  });
+}
+
+/** The daily summary file, with the send log (including this send) at the bottom. */
+export function buildSummary(day, send, settings = {}) {
+  const lines = [`Date of service: ${formatDate(day.date)}`];
+  if (day.building) lines.push(`Building: ${day.building}`);
+  if (settings.providerName) lines.push(`Provider: ${settings.providerName}`);
+  lines.push('');
+  day.patients.forEach((p, i) => {
+    lines.push(patientLabel(p, i));
+    lines.push(p.text ? fullNote(p) : '(not documented)');
+    lines.push('');
+  });
+  lines.push('---- Send log ----');
+  lines.push(...logLines(day, [...(day.sends || []), send]));
+  return lines.join('\n') + '\n';
+}
+
+export function summaryFilename(day) {
+  return day.building ? `${day.date}_${day.building}_subjective.txt` : `${day.date}_subjective.txt`;
+}
