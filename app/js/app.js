@@ -2,13 +2,13 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
 import { getDay, saveDay, deleteDay, getSettings, saveSettings, purgeOld, requestPersistence } from './store.js';
 import { fileToText } from './importers.js';
-import { DEFAULT_SETTINGS } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 5;
+const APP_VERSION = 8;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -120,9 +120,9 @@ function renderDay() {
       <div style="margin-top:18px">
         <button class="ghost danger" data-act="del-day">Delete this day</button>
         <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(day.building ? `${day.building}, ` : '')}${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
-          <button class="danger" data-act="del-day-yes">Delete day</button><button data-act="del-day-no">Keep</button></div>
+          <button class="danger" data-act="del-day-yes">Delete day</button>${day.building ? `<button class="danger" data-act="del-day-bld">Delete day and remove ${esc(day.building)}</button>` : ''}<button data-act="del-day-no">Keep</button></div>
       </div>`
-      : `<div class="empty card"><p><b>No patients for ${esc(day.building ? `${day.building} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>`}
+      : `<div class="empty card"><p><b>No patients for ${esc(day.building ? `${day.building} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text.</p></div>${day.building ? `<button class="ghost danger" data-act="del-bld" style="margin-top:12px">Remove ${esc(day.building)} from the building buttons</button>` : ''}`}
     ${day.patients.length ? `<div class="bottom-bar"><div class="inner">
       <div class="grow small muted">${documented} of ${day.patients.length} documented${day.sends.length ? ` · sent ${day.sends.filter((s) => s.kind !== 'deleted').length}×${changed ? ` · <b style="color:var(--amber)">${changed} changed since</b>` : ''}` : ''}</div>
       ${day.sends.length ? '<button class="ghost" data-act="log">Log</button>' : ''}
@@ -183,6 +183,15 @@ function renderImport() {
 }
 
 // How good a photo reading is, so the importer can retry with another layout when it is poor.
+// Take a building off the selector and switch to the next one. Its other days stay on the phone
+// (and come back if the building is added again) until they age out.
+async function removeBuilding(name, date) {
+  settings.buildings = settings.buildings.filter((b) => b !== name);
+  settings.currentBuilding = settings.buildings[0] || '';
+  await saveSettings(settings);
+  day = await getDay(date, settings.currentBuilding);
+}
+
 function judgeRoster(text) {
   const rows = parseRoster(text);
   const flagged = rows.filter((r) => r.flag).length;
@@ -285,6 +294,7 @@ async function applyVitals() {
 
 const current = () => day.patients[view.i];
 let saveTimer;
+let refreshPreview = () => {};
 
 function scheduleSave() {
   clearTimeout(saveTimer);
@@ -336,6 +346,7 @@ function renderPatient() {
     const loc = settings.locations[p.location];
     p.text = renderTemplate(settings, { locationText: loc?.text, pain: p.pain, vitals: p.vitals }) + ' ';
     p.status = 'progress';
+    p.fresh = true;
     saveDay(day);
   }
 
@@ -345,7 +356,9 @@ function renderPatient() {
       ${p.vitals ? `<div class="vitals-line">Vitals: ${esc(formatVitals(p.vitals, settings))}</div>` : ''}
       ${highPain ? `<div class="banner" id="painbanner">Pain is ${p.pain}/10. Is "pain within acceptable limits" still right?
         <button class="ghost" data-act="drop-pain-sentence">Remove that sentence</button></div>` : ''}
+      <div class="details" id="details"></div>
       <textarea id="note" spellcheck="true" autocapitalize="sentences" aria-label="Subjective note">${esc(p.text)}</textarea>
+      <div class="detail-preview small" id="detail-preview"></div>
       <div class="row">
         <button class="primary grow" data-act="done">${p.status === 'done' ? 'Save and back to list' : 'Done with patient'}</button>
         <button data-act="copy">Copy</button>
@@ -358,6 +371,9 @@ function renderPatient() {
         <button class="danger" data-act="restart-yes">Replace</button><button data-act="restart-no">Keep</button></div>
     </div>`;
   mountPhraseBar();
+  // A fresh note opens the first detail so they can be stepped through; all are optional.
+  mountDetails(p, p.fresh ? DETAILS[0].key : null);
+  if (p.fresh) { delete p.fresh; saveDay(day); }
 
   const ta = app.querySelector('#note');
   ta.addEventListener('input', (e) => {
@@ -371,7 +387,93 @@ function renderPatient() {
     }
     scheduleSave();
   });
-  ta.addEventListener('blur', flushNote);
+  ta.addEventListener('blur', () => { flushNote(); refreshPreview(); });
+}
+
+// Quick details: a row of buttons above the note. Tap one to fill it in, tap again to close it.
+// Filled details are shown under the note and added to the end of it when sent or copied.
+function mountDetails(p, openKey) {
+  const box = app.querySelector('#details');
+  p.fields ??= {};
+  let open = openKey;
+  const filled = (d) => (d.key === 'pain' ? p.pain != null : String(p.fields[d.key] ?? '').trim() !== '');
+  const shown = (d) => (d.key === 'pain' ? (p.pain != null ? `${p.pain}/10` : '') : String(p.fields[d.key] ?? ''));
+
+  const preview = () => {
+    if (!box.isConnected) return;
+    // Show the whole note as it will be sent, with the details in their places.
+    if (!detailSentences(p).length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
+    const ta = document.getElementById('note');
+    const shown = ta ? { ...p, text: ta.value } : p;
+    app.querySelector('#detail-preview').innerHTML = `<div class="muted">As it will be sent:</div>${esc(fullNote(shown))}`;
+  };
+  const save = async () => {
+    p.updatedAt = Date.now();
+    await saveDay(day);
+    preview();
+  };
+
+  const panel = (d) => {
+    const idx = DETAILS.indexOf(d);
+    const next = DETAILS[idx + 1];
+    if (d.key === 'pain') {
+      return `<div class="dpanel"><div class="dkeys">
+        ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => `<button data-dv="${k}" class="${p.pain === k ? 'on' : ''}">${k}</button>`).join('')}
+        </div>${panelNav(next)}</div>`;
+    }
+    return `<div class="dpanel">
+      ${d.quick ? `<div class="dkeys">${d.quick.map((q) => `<button data-dv="${esc(q)}" class="${p.fields[d.key] === q ? 'on' : ''}">${esc(q)}${d.unit === '%' ? '%' : ''}</button>`).join('')}</div>` : ''}
+      ${d.presets.map((q) => `<button class="dpreset ${p.fields[d.key] === q ? 'on' : ''}" data-dv="${esc(q)}">${esc(q)}</button>`).join('')}
+      <div class="row"><input id="dinput" value="${esc(p.fields[d.key] ?? '')}" placeholder="${d.unit ? `Number (${d.unit}) or type…` : 'Type…'}" autocomplete="off" style="flex:1" ${d.unit ? 'inputmode="text"' : ''}></div>
+      ${panelNav(next)}</div>`;
+  };
+  const panelNav = (next) => `<div class="row dnav">
+      <button class="ghost" data-dclear>Clear</button>
+      ${next ? `<button data-dnext="${next.key}">Next: ${esc(next.label)} ›</button>` : ''}
+      <button class="primary" data-dclose>Done</button></div>`;
+
+  const draw = () => {
+    const d = DETAILS.find((x) => x.key === open);
+    box.innerHTML = `<div class="dchips">${DETAILS.map((x) => `
+      <button class="dchip ${filled(x) ? 'filled' : ''} ${x.key === open ? 'open' : ''}" data-dkey="${x.key}" aria-expanded="${x.key === open}">
+        ${esc(x.label)}${filled(x) ? ` <small>${esc(shown(x).slice(0, 14))}${shown(x).length > 14 ? '…' : ''}</small>` : ''}</button>`).join('')}</div>
+      ${d ? panel(d) : ''}`;
+    box.querySelector('#dinput')?.addEventListener('input', (e) => {
+      p.fields[open] = e.target.value;
+      clearTimeout(box._t);
+      box._t = setTimeout(save, 300);
+    });
+  };
+
+  box.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.dkey) open = open === b.dataset.dkey ? null : b.dataset.dkey;
+    else if (b.dataset.dnext) open = b.dataset.dnext;
+    else if ('dclose' in b.dataset) open = null;
+    else if ('dclear' in b.dataset) {
+      if (open === 'pain') setPain(p, null); else delete p.fields[open];
+      await save();
+    } else if (b.dataset.dv != null) {
+      if (open === 'pain') setPain(p, +b.dataset.dv);
+      else p.fields[open] = p.fields[open] === b.dataset.dv ? '' : b.dataset.dv;
+      await save();
+    }
+    draw();
+  });
+  draw();
+  preview();
+  refreshPreview = preview;
+}
+
+// Change the pain score, and the "Pain N/10." sentence in the note if there is one.
+function setPain(p, v) {
+  p.pain = v;
+  const ta = document.getElementById('note');
+  if (ta) {
+    const next = v == null ? ta.value.replace(/Pain \d+\/10\.\s*/, '') : ta.value.replace(/Pain \d+\/10/, `Pain ${v}/10`);
+    if (next !== ta.value) { ta.value = next; p.text = next; }
+  }
 }
 
 function insertAtCursor(text) {
@@ -669,7 +771,7 @@ app.addEventListener('click', async (e) => {
       await saveDay(day);
       history.back();
       break;
-    case 'copy': copyText(app.querySelector('#note').value); break;
+    case 'copy': await flushNote(); copyText(fullNote(current())); break;
     case 'del-day': case 'del-pt': case 'del-file': app.querySelector(`#${act}-confirm`).hidden = false; break;
     case 'del-day-no': case 'del-pt-no': case 'del-file-no': app.querySelector(`#${act.slice(0, -3)}-confirm`).hidden = true; break;
     case 'del-day-yes': {
@@ -677,6 +779,21 @@ app.addEventListener('click', async (e) => {
       await deleteDay(day);
       day = await getDay(date, building);
       toast(`Deleted ${building ? `${building}, ` : ''}${formatDate(date)} from this phone`);
+      render();
+      break;
+    }
+    case 'del-day-bld': {
+      const { date, building } = day;
+      await deleteDay(day);
+      await removeBuilding(building, date);
+      toast(`Deleted ${building}, ${formatDate(date)} and removed ${building}`);
+      render();
+      break;
+    }
+    case 'del-bld': {
+      const { building } = day;
+      await removeBuilding(building, day.date);
+      toast(`Removed ${building}. Add it again any time with + Building.`);
       render();
       break;
     }
@@ -716,6 +833,7 @@ app.addEventListener('click', async (e) => {
       p.text = '';
       p.location = undefined;
       p.pain = undefined;
+      p.fields = {};
       p.status = 'new';
       await saveDay(day);
       render();
