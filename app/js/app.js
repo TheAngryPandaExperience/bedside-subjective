@@ -8,7 +8,7 @@ import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS, DETAILS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 8;
+const APP_VERSION = 9;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -110,6 +110,22 @@ function renderDay() {
     <div class="row" style="margin-bottom:14px">
       <button class="grow" data-act="import" data-kind="roster">Load patients</button>
       <button class="grow" data-act="import" data-kind="vitals" ${day.patients.length ? '' : 'disabled'}>Load vitals</button>
+      <button class="grow" data-act="add-pt">+ Add patient</button>
+    </div>
+    <div id="add-pt-form" class="card" style="display:grid;gap:8px;margin-bottom:14px" hidden>
+      <div class="row">
+        <input id="ap-last" placeholder="Last name" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">
+        <input id="ap-first" placeholder="First name" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">
+      </div>
+      <div class="row">
+        <input id="ap-mrn" placeholder="MRN" autocomplete="off" inputmode="numeric" style="flex:1;min-width:0">
+        <input id="ap-room" placeholder="Room (optional)" autocomplete="off" style="flex:1;min-width:0">
+      </div>
+      <div id="ap-msg" class="small" style="color:var(--bad)"></div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="ghost" data-act="add-pt-cancel">Cancel</button>
+        <button class="primary" data-act="add-pt-save">Add to list</button>
+      </div>
     </div>
     ${day.patients.length ? `<div class="patients">${day.patients.map((p, i) => `
       <button class="pt-btn" data-act="open" data-i="${i}">
@@ -813,6 +829,24 @@ app.addEventListener('click', async (e) => {
       day = await getDay(day.date, settings.currentBuilding);
       render();
       break;
+    case 'add-pt':
+      app.querySelector('#add-pt-form').hidden = false;
+      app.querySelector('#ap-last').focus();
+      break;
+    case 'add-pt-cancel': app.querySelector('#add-pt-form').hidden = true; break;
+    case 'add-pt-save': {
+      const val = (id) => app.querySelector(id).value.trim();
+      const np = { last: val('#ap-last'), first: val('#ap-first'), mrn: val('#ap-mrn'), room: val('#ap-room'), status: 'new', text: '' };
+      const msg = app.querySelector('#ap-msg');
+      if (!np.last || !np.mrn) { msg.textContent = 'Last name and MRN are needed.'; break; }
+      const dupe = day.patients.findIndex((x) => x.mrn === np.mrn);
+      if (dupe >= 0) { msg.textContent = `MRN ${np.mrn} is already on the list as #${dupe + 1}.`; break; }
+      day.patients.push(np);
+      await saveDay(day);
+      toast(`Added ${day.patients.length}. ${np.last}, ${np.first}`);
+      render();
+      break;
+    }
     case 'add-building':
       app.querySelector('#add-building-form').hidden = false;
       app.querySelector('#new-building').focus();
