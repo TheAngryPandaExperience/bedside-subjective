@@ -8,7 +8,7 @@ import { fileToText } from './importers.js';
 import { DEFAULT_SETTINGS, DETAILS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -294,6 +294,7 @@ async function applyVitals() {
 
 const current = () => day.patients[view.i];
 let saveTimer;
+let refreshPreview = () => {};
 
 function scheduleSave() {
   clearTimeout(saveTimer);
@@ -386,7 +387,7 @@ function renderPatient() {
     }
     scheduleSave();
   });
-  ta.addEventListener('blur', flushNote);
+  ta.addEventListener('blur', () => { flushNote(); refreshPreview(); });
 }
 
 // Quick details: a row of buttons above the note. Tap one to fill it in, tap again to close it.
@@ -399,9 +400,12 @@ function mountDetails(p, openKey) {
   const shown = (d) => (d.key === 'pain' ? (p.pain != null ? `${p.pain}/10` : '') : String(p.fields[d.key] ?? ''));
 
   const preview = () => {
-    const lines = detailSentences(p);
-    app.querySelector('#detail-preview').innerHTML = lines.length
-      ? `<span class="muted">Added after your note:</span> ${esc(lines.join(' '))}` : '';
+    if (!box.isConnected) return;
+    // Show the whole note as it will be sent, with the details in their places.
+    if (!detailSentences(p).length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
+    const ta = document.getElementById('note');
+    const shown = ta ? { ...p, text: ta.value } : p;
+    app.querySelector('#detail-preview').innerHTML = `<div class="muted">As it will be sent:</div>${esc(fullNote(shown))}`;
   };
   const save = async () => {
     p.updatedAt = Date.now();
@@ -459,6 +463,7 @@ function mountDetails(p, openKey) {
   });
   draw();
   preview();
+  refreshPreview = preview;
 }
 
 // Change the pain score, and the "Pain N/10." sentence in the note if there is one.

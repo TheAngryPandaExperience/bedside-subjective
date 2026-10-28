@@ -38,29 +38,61 @@ function sentence(s) {
   return t ? `${t[0].toUpperCase()}${t.slice(1)}.` : '';
 }
 
-/** The quick details as sentences, in the order of DETAILS. Empty ones are left out. */
-export function detailSentences(p) {
+/** The quick details as { key: sentence }. Empty ones are left out. */
+function detailMap(p) {
   const f = p.fields || {};
-  const out = [];
+  const out = {};
   for (const d of DETAILS) {
     if (d.key === 'pain') {
       // Pain normally lives in the template sentence; add it here only if the note has none.
-      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.push(`Pain ${p.pain}/10.`);
+      if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.pain = `Pain ${p.pain}/10.`;
       continue;
     }
     const v = String(f[d.key] ?? '').trim();
     if (!v) continue;
-    if (d.quote) out.push(`Pt states "${v.replace(/^"|"$/g, '')}".`);
-    else if (d.presets.includes(v)) out.push(sentence(v));
-    else if (d.numberText && /^\d+(\.\d+)?$/.test(v)) out.push(sentence(d.numberText(v)));
-    else out.push(sentence(d.prefix + v));
+    if (d.quote) out[d.key] = `Pt states "${v.replace(/^"|"$/g, '')}".`;
+    else if (d.presets.includes(v)) out[d.key] = sentence(v);
+    else if (d.numberText && /^\d+(\.\d+)?$/.test(v)) out[d.key] = sentence(d.numberText(v));
+    else out[d.key] = sentence(d.prefix + v);
   }
   return out;
 }
 
-/** The note as it goes out: the typed text followed by the quick details. */
+/** The quick details as sentences, in the order of DETAILS. */
+export function detailSentences(p) {
+  return Object.values(detailMap(p));
+}
+
+// Insert `add` right after the first match of `re` in `text`; null if there is no match.
+function insertAfter(text, re, add) {
+  const m = re.exec(text);
+  if (!m) return null;
+  const at = m.index + m[0].length;
+  return `${text.slice(0, at)} ${add}${text.slice(at)}`;
+}
+
+/**
+ * The note as it goes out, with each quick detail in its place:
+ * overnight, nursing and new after the first sentence (where the patient was assessed);
+ * meal % after the appetite sentence; therapy after the therapy sentence; anything else at the end.
+ * If the anchor sentence was edited away, that detail goes at the end.
+ */
 export function fullNote(p) {
-  return [String(p.text || '').trim(), ...detailSentences(p)].filter(Boolean).join(' ');
+  const d = detailMap(p);
+  let text = String(p.text || '').trim();
+  const tail = [];
+  const place = (keys, re) => {
+    const add = keys.map((k) => d[k]).filter(Boolean).join(' ');
+    if (!add) return;
+    const next = text ? insertAfter(text, re, add) : null;
+    if (next == null) tail.push(add); else text = next;
+  };
+  place(['overnight', 'nursing', 'new'], /^[^.!?]*[.!?]/);
+  place(['meal'], /\b(?:good|fair|poor)\s+appetite[^.]*\./i);
+  place(['therapy'], /\b(?:continues to work with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
+  for (const k of ['pain', 'said']) if (d[k]) tail.push(d[k]);
+  if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
+  return [text, ...tail].filter(Boolean).join(' ');
 }
 
 /** The same text as a fingerprint, so an edit after sending can be detected. */
