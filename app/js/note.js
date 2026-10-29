@@ -175,22 +175,32 @@ export function logLines(day, sends) {
   });
 }
 
-/** The daily summary file, with the send log (including this send) at the bottom. */
-export function buildSummary(day, send, settings = {}) {
-  const lines = [`Date of service: ${formatDate(day.date)}`];
-  if (day.building) lines.push(`Building: ${day.building}`);
-  if (settings.providerName) lines.push(`Provider: ${settings.providerName}`);
-  lines.push('');
-  day.patients.forEach((p, i) => {
-    lines.push(patientLabel(p, i));
-    lines.push(p.text ? fullNote(p) : '(not documented)');
-    lines.push('');
-  });
-  lines.push('---- Send log ----');
-  lines.push(...logLines(day, [...(day.sends || []), send]));
-  return lines.join('\n') + '\n';
+/**
+ * The daily file, in the layout the Note Updater reads: building, "Daily notes", the date of service
+ * as M/D/YYYY, then one line per patient: "LAST, FIRST (MRN): whole note on one line".
+ * A patient with no note yet is written as "New pt". Nothing else goes in the file; the send log
+ * is kept separately.
+ */
+export function summaryLines(day) {
+  const [y, m, d] = day.date.split('-').map(Number);
+  const lines = [];
+  if (day.building) lines.push(day.building);
+  lines.push('Daily notes', `${m}/${d}/${y}`);
+  for (const p of day.patients) {
+    const text = p.text ? fullNote(p).replace(/\s+/g, ' ').trim() : '';
+    const name = `${String(p.last).trim().toUpperCase()}, ${String(p.first).trim().toUpperCase()}`;
+    lines.push(`${name} (${p.mrn}): ${text || 'New pt'}`);
+  }
+  return lines;
 }
 
+export function buildSummary(day) {
+  return summaryLines(day).join('\n') + '\n';
+}
+
+/** "Desert Blossom Daily notes 10_26_26.docx" */
 export function summaryFilename(day) {
-  return day.building ? `${day.date}_${day.building}_subjective.txt` : `${day.date}_subjective.txt`;
+  const [y, m, d] = day.date.split('-').map(Number);
+  const stamp = `${m}_${d}_${String(y).slice(-2)}`;
+  return day.building ? `${day.building} Daily notes ${stamp}.docx` : `Daily notes ${stamp}.docx`;
 }

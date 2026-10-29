@@ -2,13 +2,14 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
 import { getDay, saveDay, deleteDay, getSettings, saveSettings, purgeOld, requestPersistence } from './store.js';
 import { fileToText } from './importers.js';
+import { makeDocx, DOCX_TYPE } from './docx.js';
 import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -581,25 +582,41 @@ function mountPhraseBar() {
 
 // ---------- send ----------
 
-async function sendDay() {
-  const send = nextSend(day);
-  const content = buildSummary(day, send, settings);
+// The day's Word file, plus its plain text (shown in the app and kept as the archive copy).
+function dayFile() {
   const filename = summaryFilename(day);
+  return { filename, content: buildSummary(day), bytes: makeDocx(summaryLines(day), { title: filename.replace(/\.docx$/, '') }) };
+}
+
+function toBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+async function sendDay({ overwrite = false } = {}) {
+  const send = nextSend(day);
+  const { filename, content, bytes } = dayFile();
   const logLine = logLines(day, [send])[0];
   try {
     const res = await fetch(`${receiverBase()}api/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Token': settings.receiverToken || '' },
-      body: JSON.stringify({ date: day.date, building: day.building || '', sendNo: send.n, filename, content, logLine }),
+      body: JSON.stringify({ date: day.date, building: day.building || '', sendNo: send.n, filename, content, docx: toBase64(bytes), logLine, overwrite }),
     });
+    if (res.status === 409) {
+      // A file with this name is in the Daily folder and wasn't made by this app: ask before replacing it.
+      go({ name: 'log', conflict: { filename } });
+      return;
+    }
     if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token. Check Settings.' : `Receiver error ${res.status}`);
+    const info = await res.json().catch(() => ({}));
     day.sends.push(send);
     await saveDay(day);
-    toast(`Sent to computer (send #${send.n})`);
+    toast(`Sent ${info.file || filename} (send #${send.n})`);
     render();
   } catch (err) {
-    view = { name: 'log', fallback: { content, filename, send, error: err.message } };
-    render();
+    go({ name: 'log', fallback: { send, error: err.message } });
   }
 }
 
@@ -625,41 +642,61 @@ async function deleteFileOnComputer() {
 
 function renderLog() {
   const fb = view.fallback;
+  const conflict = view.conflict;
   const lines = logLines(day, day.sends);
   const changed = changedSinceSend(day);
+  const filename = summaryFilename(day);
   app.innerHTML = `
     <div class="top">
       <button class="ghost" data-act="back">‹ List</button>
-      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : 'Send log'}</h1></div>
+      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : conflict ? 'File already there' : 'Send log'}</h1></div>
     </div>
-    ${fb ? `<div class="banner" style="margin-bottom:12px">${esc(fb.error.startsWith('Failed') || fb.error.includes('NetworkError') ? 'The computer could not be reached. Check that Tailscale is on and the receiver is running.' : fb.error)}</div>
-      <div class="row" style="margin-bottom:12px">
-        <button class="primary grow" data-act="retry">Try again</button>
-        ${navigator.canShare ? '<button class="grow" data-act="share">Share file (Taildrop)</button>' : ''}
-        <button class="grow" data-act="copy-summary">Copy text</button>
-      </div>` : ''}
+    ${fb ? `<div class="banner" style="margin-bottom:12px">${esc(fb.error.startsWith('Failed') || fb.error.includes('NetworkError') ? 'The computer could not be reached. Check that Tailscale is on and the receiver is running. You can also save the Word file and put it in the building\'s Daily folder yourself.' : fb.error)}</div>
+      <div class="row" style="margin-bottom:12px"><button class="primary grow" data-act="retry">Try again</button></div>` : ''}
+    ${conflict ? `<div class="banner" style="margin-bottom:12px">${esc(conflict.filename)} is already in the Daily folder and was not made by this app. Replace it?
+      <button class="danger" data-act="send-overwrite">Replace it</button><button data-act="back">Cancel</button></div>` : ''}
+    <div class="row" style="margin-bottom:12px">
+      ${navigator.canShare ? '<button class="grow" data-act="share">Share Word file</button>' : ''}
+      <button class="grow" data-act="download">Save Word file</button>
+      <button class="grow" data-act="copy-summary">Copy text</button>
+    </div>
     <h2>${esc(day.building ? `${day.building} · ` : '')}${esc(formatDate(day.date))}</h2>
     ${lines.length ? `<pre class="summary">${esc(lines.join('\n'))}</pre>` : '<p class="muted">Nothing sent yet for this day.</p>'}
     ${day.sends.length && changed.length ? `<p class="small" style="color:var(--amber)">${changed.length} patient(s) changed since the last send.</p>` : ''}
-    ${!fb && day.sends.some((s) => s.kind !== 'deleted') ? `<div style="margin:10px 0">
+    ${!fb && !conflict && day.sends.some((s) => s.kind !== 'deleted') ? `<div style="margin:10px 0">
       <button class="ghost danger" data-act="del-file">Delete this day's file from computer</button>
-      <div id="del-file-confirm" class="banner" hidden>Delete ${esc(summaryFilename(day))} and its saved copies from your computer? This can't be undone. Notes on this phone are kept.
+      <div id="del-file-confirm" class="banner" hidden>Delete ${esc(filename)} from the computer? This can't be undone. Notes on this phone are kept.
         <button class="danger" data-act="del-file-yes">Delete file</button><button data-act="del-file-no">Keep</button></div>
     </div>` : ''}
-    <h2>${fb ? 'File to send' : 'Preview of next send'}</h2>
-    <pre class="summary">${esc(fb ? fb.content : buildSummary(day, nextSend(day), settings))}</pre>`;
+    <h2>${esc(filename)}</h2>
+    <pre class="summary">${esc(buildSummary(day))}</pre>`;
 }
 
-async function shareFallback() {
-  const { content, filename, send } = view.fallback;
-  const file = new File([content], filename, { type: 'text/plain' });
+// Save the Word file to the phone (Downloads), for moving to the computer by hand.
+function downloadDayFile() {
+  const { filename, bytes } = dayFile();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bytes], { type: DOCX_TYPE }));
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+async function shareDayFile() {
+  const { filename, bytes } = dayFile();
+  const file = new File([bytes], filename, { type: DOCX_TYPE });
   try {
     await navigator.share({ files: [file], title: filename });
-    send.via = 'share';
-    day.sends.push(send);
-    await saveDay(day);
-    toast('Shared. Logged as sent.');
-    history.back();
+    // A share after a failed send counts as that send, so the log stays complete.
+    if (view.fallback) {
+      const { send } = view.fallback;
+      send.via = 'share';
+      day.sends.push(send);
+      await saveDay(day);
+      toast('Shared. Logged as sent.');
+      history.back();
+    }
   } catch { /* cancelled */ }
 }
 
@@ -675,7 +712,7 @@ function renderSettings() {
     </div>
     <div class="stack">
       <label>Buildings, one per line (each gets its own patient list and daily file)<textarea id="s-buildings" rows="3">${esc(s.buildings.join('\n'))}</textarea></label>
-      <label>Your name (printed on the daily file)<input id="s-provider" value="${esc(s.providerName)}"></label>
+      <label>Your name<input id="s-provider" value="${esc(s.providerName)}"></label>
 
       <h2>Note template</h2>
       <p class="small muted">{location} is filled by the location button, {pain} by the keypad, {vitals} by loaded vitals (left blank otherwise).</p>
@@ -926,8 +963,10 @@ app.addEventListener('click', async (e) => {
       if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); }
       break;
     case 'retry': history.back(); setTimeout(sendDay, 50); break;
-    case 'share': await shareFallback(); break;
-    case 'copy-summary': copyText(view.fallback.content); break;
+    case 'share': await shareDayFile(); break;
+    case 'download': downloadDayFile(); break;
+    case 'send-overwrite': history.back(); setTimeout(() => sendDay({ overwrite: true }), 50); break;
+    case 'copy-summary': copyText(buildSummary(day)); break;
     case 'save-settings':
       settings = readSettingsForm();
       await saveSettings(settings);
