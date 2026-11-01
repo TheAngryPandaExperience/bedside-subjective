@@ -68,6 +68,15 @@ export function saveSettings(settings) {
   return tx('kv', 'readwrite', (s) => s.put(settings, 'settings'));
 }
 
+/** Antibiotic courses by MRN: { [mrn]: [course, ...] }. Kept apart from days so they outlast the cleanup below. */
+export async function getAbx() {
+  return (await tx('kv', 'readonly', (s) => s.get('abx'))) || {};
+}
+
+export function saveAbx(abx) {
+  return tx('kv', 'readwrite', (s) => s.put(abx, 'abx'));
+}
+
 /** Delete visits that were sent and are older than the retention window. */
 export async function purgeOld(retentionDays) {
   if (!retentionDays) return;

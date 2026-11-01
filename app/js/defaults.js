@@ -46,6 +46,7 @@ export const DEFAULT_PHRASES = [
   { key: '.fl', group: 'Education', text: 'Pt educated on the benefits from hydration and consistent fluids intake.' },
   { key: '.lo', group: 'Education', text: 'Labs ordered:' },
   { key: '.lr', group: 'Education', text: 'Labs reviewed.' },
+  { key: '.dcc', group: 'Education', text: 'Pt assessed at the bedside. VS stable. Pt has a fair appetite and is drinking fluids throughout the day. Pt looking forward to discharging home. Reviewed discharge process with pt. Reviewed medications. Pt instructed to continue with current medications until the patient sees their primary care provider. Pt tolerated medications and therapy well during their SNF admission. No acute complications since last assessment.' },
   // Meds
   { key: '.a', group: 'Meds', text: 'Amlodipine' },
   { key: '.g', group: 'Meds', text: 'gabapentin' },
@@ -66,6 +67,16 @@ export const DEFAULT_PHRASES = [
   { key: 'cccs', group: 'Words', text: 'continues' },
 ];
 
+// Antibiotics to pick from on the ABX detail. A name in brackets helps the search but stays out of the note.
+export const DEFAULT_ABX = [
+  'Amoxicillin', 'Amoxicillin-clavulanate (Augmentin)', 'Ampicillin', 'Ampicillin-sulbactam (Unasyn)', 'Azithromycin (Zithromax)',
+  'Cefazolin (Ancef)', 'Cefdinir', 'Cefepime', 'Cefpodoxime (Vantin)', 'Ceftriaxone (Rocephin)', 'Cefuroxime (Ceftin)',
+  'Cephalexin (Keflex)', 'Ciprofloxacin (Cipro)', 'Clindamycin', 'Daptomycin', 'Doxycycline', 'Ertapenem (Invanz)',
+  'Fosfomycin', 'Gentamicin', 'Levofloxacin (Levaquin)', 'Linezolid (Zyvox)', 'Meropenem', 'Metronidazole (Flagyl)',
+  'Nitrofurantoin (Macrobid)', 'Penicillin VK', 'Piperacillin-tazobactam (Zosyn)', 'Rifampin',
+  'Sulfamethoxazole-trimethoprim (Bactrim)', 'Vancomycin',
+];
+
 export const DEFAULT_SETTINGS = {
   template: DEFAULT_TEMPLATE,
   locations: DEFAULT_LOCATIONS,
@@ -77,8 +88,12 @@ export const DEFAULT_SETTINGS = {
   retentionDays: 7,
   receiverToken: '',
   receiverUrl: '',
-  buildings: [],
+  buildings: [], // permanent building ids, in button order
+  buildingNames: {}, // id -> name shown and used for folders (missing = the id itself)
+  buildingFormer: {}, // id -> earlier names, so the receiver can rename old folders
   currentBuilding: '',
+  abxList: DEFAULT_ABX,
+  addedDefaults: [], // starter items added to existing installs by later versions
   providerName: '',
 };
 
@@ -97,11 +112,12 @@ export const DETAILS = [
   { key: 'therapy', label: 'Therapy', prefix: 'Therapy: ', unit: 'ft',
     numberText: (v) => `Pt ambulated ${v} ft with therapy`,
     quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
+  { key: 'abx', label: 'ABX' },
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
 ];
 
 // Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
 // "Pain 6/10 to right knee and hip, aching and sharp."
 export const PAIN_SIDES = ['left', 'right', 'bilateral'];
-export const PAIN_SITES = ['lower back', 'knee', 'hip', 'shoulder', 'neck', 'leg', 'foot', 'abdomen', 'incision site', 'generalized'];
-export const PAIN_TYPES = ['aching', 'sharp', 'dull', 'burning', 'throbbing', 'stabbing', 'shooting', 'cramping', 'tender'];
+export const PAIN_SITES = ['lower back', 'knee', 'hip', 'shoulder', 'neck', 'leg', 'foot', 'abdomen', 'incision site', 'fingers', 'hands', 'generalized'];
+export const PAIN_TYPES = ['aching', 'sharp', 'dull', 'burning', 'throbbing', 'stabbing', 'shooting', 'cramping', 'tender', 'numbness', 'tingling'];

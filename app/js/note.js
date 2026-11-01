@@ -52,6 +52,17 @@ function sentence(s) {
   return t ? `${t[0].toUpperCase()}${t.slice(1)}.` : '';
 }
 
+/**
+ * A number or range typed or tapped for a detail, without its unit: "50", "50-75", "50 to 75%" -> "50-75".
+ * '' when the value is anything else.
+ */
+export function numberValue(v, unit = '') {
+  const u = unit ? `(?:\\s*${unit})?` : '';
+  const m = String(v).trim().match(new RegExp(`^(\\d+(?:\\.\\d+)?)${u}(?:\\s*(?:-|–|to)\\s*(\\d+(?:\\.\\d+)?)${u})?$`, 'i'));
+  if (!m) return '';
+  return m[2] ? `${m[1]}-${m[2]}` : m[1];
+}
+
 /** The quick details as { key: sentence }. Empty ones are left out. */
 function detailMap(p) {
   const f = p.fields || {};
@@ -62,12 +73,22 @@ function detailMap(p) {
       if (p.pain != null && !/Pain \d+\/10/.test(p.text || '')) out.pain = `${painPhrase(p)}.`;
       continue;
     }
-    const v = String(f[d.key] ?? '').trim();
+    if (d.key === 'abx') {
+      // Antibiotic sentences are worked out by the app for the date of service (see abxSentences).
+      if (p.abx?.length) out.abx = p.abx.join(' ');
+      continue;
+    }
+    let v = String(f[d.key] ?? '').trim();
     if (!v) continue;
+    const num = numberValue(v, d.unit);
     if (d.quote) out[d.key] = `Pt states "${v.replace(/^"|"$/g, '')}".`;
     else if (d.presets.includes(v)) out[d.key] = sentence(v);
-    else if (d.numberText && /^\d+(\.\d+)?$/.test(v)) out[d.key] = sentence(d.numberText(v));
-    else out[d.key] = sentence(d.prefix + v);
+    else if (d.numberText && num) out[d.key] = sentence(d.numberText(num));
+    else {
+      // Typed text for a % detail: put a % after each bare number ("ate 50 of lunch" -> "ate 50% of lunch").
+      if (d.unit === '%') v = v.replace(/(\d+(?:\.\d+)?)(?!\s*%|[\d.])/g, '$1%');
+      out[d.key] = sentence(d.prefix + v);
+    }
   }
   return out;
 }
@@ -104,9 +125,97 @@ export function fullNote(p) {
   place(['overnight', 'nursing', 'new'], /^[^.!?]*[.!?]/);
   place(['meal'], /\b(?:good|fair|poor)\s+appetite[^.]*\./i);
   place(['therapy'], /\b(?:continues to work with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
-  for (const k of ['pain', 'said']) if (d[k]) tail.push(d[k]);
+  for (const k of ['pain', 'abx', 'said']) if (d[k]) tail.push(d[k]);
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
+}
+
+/**
+ * Yesterday's note as a start for today: the vitals are swapped for today's (or left blank),
+ * since old readings must never be carried into a new note. Everything else is kept to edit.
+ */
+export function carryForward(lastNote, todayVitals, settings) {
+  const vit = formatVitals(todayVitals, settings);
+  return stripAbx(String(lastNote)).trim().replace(/Vital signs:.*?(?=\bdenies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
+}
+
+// ---------- antibiotics ----------
+// A course: { id, drug, route: 'oral' | 'IV', start: 'YYYY-MM-DD', days: 14 (or 0 = length not set),
+//   added: date of service it was entered on, stopped?: { date, reason: 'discontinued' | 'completed' | 'changed' } }
+
+const dayNo = (iso) => Math.round(Date.UTC(...iso.split('-').map((x, i) => +x - (i === 1 ? 1 : 0))) / 86400000);
+
+/** Day number of the course on `date` (start date = day 1). */
+export function abxDayNumber(c, date) {
+  return dayNo(date) - dayNo(c.start) + 1;
+}
+
+/** "2026-11-11": the last day of the course, or '' when no length is set. */
+export function abxEndDate(c) {
+  if (!c.days) return '';
+  return new Date((dayNo(c.start) + c.days - 1) * 86400000).toISOString().slice(0, 10);
+}
+
+/** The drug's name for the note: "Ceftriaxone (Rocephin)" -> "Ceftriaxone". */
+export const abxName = (drug) => String(drug).replace(/\s*\(.*\)\s*$/, '').trim();
+
+/** What the course means on `date`: 'before', 'active', 'stopping' (stopped that day), or 'ended'. */
+export function abxState(c, date) {
+  const n = abxDayNumber(c, date);
+  if (n < 1) return 'before';
+  if (c.stopped) {
+    if (date === c.stopped.date) return 'stopping';
+    if (date > c.stopped.date) return 'ended';
+  }
+  if (c.days && n > c.days) return 'ended';
+  return 'active';
+}
+
+/** The note sentences for a patient's courses on one date of service. */
+export function abxSentences(courses, date) {
+  const out = [];
+  for (const c of courses || []) {
+    if (c.added && date < c.added) continue; // don't change notes from before it was entered
+    const state = abxState(c, date);
+    const what = `${c.route} ${abxName(c.drug)}`;
+    if (state === 'active') {
+      out.push(`Pt continues with ${what} without complications on day ${abxDayNumber(c, date)}${c.days ? ` of ${c.days}` : ''}.`);
+    } else if (state === 'stopping') {
+      out.push({
+        completed: `Pt completed ${what} without complications.`,
+        changed: `Pt's ${what} was changed to oral today.`,
+      }[c.stopped.reason] || `Pt's ${what} was discontinued today.`);
+    }
+  }
+  return out;
+}
+
+/** Take the app's antibiotic sentences out of a note (used when starting from an earlier note). */
+export function stripAbx(text) {
+  return String(text)
+    .replace(/\s*Pt continues with (?:oral|IV) [^.]*? without complications on day \d+(?: of \d+)?\./g, '')
+    .replace(/\s*Pt completed (?:oral|IV) [^.]*? without complications\./g, '')
+    .replace(/\s*Pt's (?:oral|IV) [^.]*? was (?:discontinued|changed to oral) today\./g, '');
+}
+
+/** Word-by-word differences from `before` to `after`: [{ t: 'same' | 'add' | 'del', w }]. */
+export function wordDiff(before, after) {
+  const a = String(before).split(/\s+/).filter(Boolean);
+  const b = String(after).split(/\s+/).filter(Boolean);
+  // Longest common subsequence table, filled from the end.
+  const L = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { out.push({ t: 'same', w: a[i] }); i++; j++; }
+    else if (j < b.length && (i === a.length || L[i][j + 1] >= L[i + 1][j])) out.push({ t: 'add', w: b[j++] });
+    else out.push({ t: 'del', w: a[i++] });
+  }
+  return out;
 }
 
 /** The same text as a fingerprint, so an edit after sending can be detected. */
