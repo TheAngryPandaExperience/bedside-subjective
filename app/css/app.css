@@ -156,3 +156,31 @@ pre.summary { white-space: pre-wrap; font-size: .85rem; background: var(--surfac
 .dnav { justify-content: flex-end; }
 .detail-preview { margin: 6px 0 10px; color: var(--ink); }
 .detail-preview:empty { display: none; }
+
+/* v14: building counts, quick switch, manage, roll over, ABX */
+.bchip .n { font-weight: 400; font-size: .8rem; color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.bchip .n:empty { display: none; }
+.bchip.on .n { color: var(--accent-ink); opacity: .85; }
+.bchip .n.all { color: var(--good); font-weight: 700; }
+.bchip.on .n.all { color: var(--accent-ink); }
+.bchip.small { min-height: 34px; padding: 4px 10px; font-size: .85rem; white-space: nowrap; }
+.pt-btn.next { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.abx-tag { display: inline-block; font-size: .72rem; font-weight: 700; padding: 0 6px; border-radius: 99px; background: var(--amber-soft); color: var(--amber); margin-left: 4px; }
+.bpicker { display: grid; gap: 6px; margin: 0 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px rgb(0 0 0 / .15); }
+.opt { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; width: 100%; }
+.opt.on { border-color: var(--accent); background: var(--accent-soft); }
+.opt .n { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.opt .n.all { color: var(--good); font-weight: 700; }
+.brow { display: flex; align-items: center; gap: 6px; }
+.brow .grow { min-width: 0; }
+.brow button { min-width: 44px; padding: 8px 10px; }
+.ro-row { display: flex; gap: 10px; align-items: center; padding: 6px 2px; color: var(--ink); }
+.ro-row input { width: 22px; height: 22px; flex: 0 0 auto; }
+.check { display: flex; gap: 10px; align-items: center; color: var(--ink); }
+.check input { width: 22px; height: 22px; }
+.abx-row { display: flex; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.abx-row .grow { min-width: 0; }
+.abx-row button { min-height: 38px; padding: 6px 10px; }
+.abx-form { display: grid; gap: 8px; }
+.abx-matches { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
+.abx-matches .opt { min-height: 40px; padding: 8px 12px; }
