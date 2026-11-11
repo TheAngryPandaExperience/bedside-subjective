@@ -78,14 +78,53 @@ export function saveAbx(abx) {
 }
 
 /** Delete visits that were sent and are older than the retention window. */
-export async function purgeOld(retentionDays) {
+export async function purgeOld(retentionDays, keep = () => false) {
   if (!retentionDays) return;
   const cutoff = Date.now() - retentionDays * 86400000;
   for (const day of await listDays()) {
     const last = [...(day.sends || [])].reverse().find((s) => s.hashes);
-    if (last && last.at < cutoff) await deleteDay(day);
+    // APP-11-11: a day that was changed after its last send is kept until it is sent again (or deleted by hand).
+    if (last && last.at < cutoff && !keep(day)) await deleteDay(day);
   }
 }
+
+// ===== APP-11-11  START: backup =====
+
+/** Everything on this phone as one object: days, antibiotic courses and settings (never the receiver token). */
+export async function exportAll() {
+  const { receiverToken, ...settings } = await getSettings();
+  return { app: 'bedside-subjective', backup: 1, made: new Date().toISOString(), days: await listDays(), abx: await getAbx(), settings };
+}
+
+/**
+ * Put a backup back. Only what is missing is added: a day already on this phone is left as it is,
+ * an antibiotic course already here is left as it is, and settings are not touched.
+ * Returns { days, skipped, abx } counts.
+ */
+export async function importAll(data) {
+  if (data?.app !== 'bedside-subjective' || !Array.isArray(data.days)) throw new Error('That is not a Bedside backup file.');
+  const have = new Set((await listDays()).filter((d) => d.patients.length).map((d) => d.id));
+  let days = 0;
+  let skipped = 0;
+  for (const d of data.days) {
+    if (!d?.id || !d.date || !Array.isArray(d.patients)) continue;
+    if (have.has(d.id)) { skipped++; continue; }
+    await saveDay({ ...d, sends: d.sends || [] });
+    days++;
+  }
+  const abx = await getAbx();
+  let added = 0;
+  for (const [mrn, list] of Object.entries(data.abx || {})) {
+    if (!Array.isArray(list)) continue;
+    const mine = abx[mrn] || [];
+    for (const c of list) if (c?.id && !mine.some((x) => x.id === c.id)) { mine.push(c); added++; }
+    if (mine.length) abx[mrn] = mine;
+  }
+  if (added) await saveAbx(abx);
+  return { days, skipped, abx: added };
+}
+
+// ===== APP-11-11  END =====
 
 /** Ask the browser not to evict our data under storage pressure. */
 export async function requestPersistence() {

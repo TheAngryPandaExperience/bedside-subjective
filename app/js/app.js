@@ -2,14 +2,16 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate } from './note.js';
-import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx } from './store.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount } from './note.js';
+import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
-import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
-const APP_VERSION = 14;
+// 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
+// and safety for notes that were not sent. Every changed place is marked APP-11-11.
+const APP_VERSION = 15;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -20,6 +22,9 @@ let view = { name: 'day' };
 let abx = {}; // antibiotic courses by MRN
 let bcounts = {}; // building id -> { done, total } for the date on screen
 let focusNext = false; // after switching building, scroll to the next patient not done
+let lastReceipt = null; // APP-11-11: { id: day id, n, text, ok } - the computer's receipt for the send just made
+let unsent = []; // APP-11-11: other days on this phone with notes that were not sent: { date, building, n, never }
+let retrying = false; // APP-11-11
 
 // A building's id never changes (its days are saved under it); its name can be renamed.
 const bname = (id) => (id ? settings.buildingNames?.[id] || id : '');
@@ -117,8 +122,16 @@ async function boot() {
     settings.addedDefaults.push('dcc');
     await saveSettings(settings);
   }
+  // APP-11-11: the "Today's decisions" buttons, added once, shown first on the phrase bar.
+  if (!settings.addedDefaults.includes('decisions')) {
+    const add = DECISION_PHRASES.filter((d) => !settings.phrases.some((x) => x.key === d.key));
+    settings.phrases = [...settings.phrases, ...add];
+    if (!settings.pinned.includes(DECISION_GROUP)) settings.pinned = [DECISION_GROUP, ...settings.pinned];
+    settings.addedDefaults.push('decisions');
+    await saveSettings(settings);
+  }
   requestPersistence();
-  purgeOld(settings.retentionDays);
+  purgeOld(settings.retentionDays, (d) => unsentCount(d) > 0); // APP-11-11: unsent changes are never aged out
   let date = todayIso();
   try { date = sessionStorage.getItem('date') || date; } catch { /* private mode */ }
   if (settings.buildings.length && !settings.buildings.includes(settings.currentBuilding)) settings.currentBuilding = settings.buildings[0];
@@ -160,6 +173,7 @@ function renderDay() {
       ${installPrompt ? 'Install this app on your phone so it opens from the home screen and works offline.'
         : 'To install: tap the Share button, then <b>Add to Home Screen</b>.'}
       ${installPrompt ? '<button class="primary" data-act="install">Install app</button>' : ''}</div>` : ''}
+    ${receiptHtml()}${pendingHtml()}<div id="unsent">${unsentHtml()}</div>
     <div class="buildings" role="group" aria-label="Building">
       ${settings.buildings.map((b) => `<button class="bchip ${b === day.building ? 'on' : ''}" data-act="building" data-b="${esc(b)}" aria-pressed="${b === day.building}">${esc(bname(b))} ${countHtml(b)}</button>`).join('')}
       <button class="bchip add" data-act="add-building">+ Building</button>
@@ -197,7 +211,7 @@ function renderDay() {
     ${day.patients.length ? `<div class="patients">${day.patients.map((p, i) => `
       <button class="pt-btn ${i === nextIdx ? 'next' : ''}" data-act="open" data-i="${i}">
         <span class="name">${esc(patientLabel(p, i))}</span>
-        <span class="meta">${[p.room, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}${activeAbx(p.mrn, day.date).length ? ' <span class="abx-tag">ABX</span>' : ''}</span>
+        <span class="meta">${[p.room, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}${activeAbx(p.mrn, day.date).length ? ' <span class="abx-tag">ABX</span>' : ''}${blankCount(p.text) ? ' <span class="abx-tag">___ to fill</span>' : ''}</span>
         <span class="status">${statusPill(p)}</span>
       </button>`).join('')}</div>
       <div style="margin-top:18px">
@@ -219,7 +233,64 @@ function renderDay() {
     render();
   });
   updateCounts();
+  updateUnsent(); // APP-11-11
 }
+
+// ===== APP-11-11  START: receipt, not-sent warnings, retry =====
+
+// The computer's answer to the send just made: what it saved and anything to check.
+function receiptHtml() {
+  const r = lastReceipt;
+  if (!r || r.id !== day.id) return '';
+  return `<div class="card" style="margin-bottom:12px;border-left:4px solid var(${r.ok ? '--good' : '--amber'})">
+    <div class="row"><b class="grow">Send #${r.n}: saved on the computer</b><button class="ghost small" data-act="receipt-ok">OK</button></div>
+    <div class="small" style="white-space:pre-wrap;margin-top:4px">${esc(r.text)}</div></div>`;
+}
+
+// A send for this day that did not get through, kept in front of him until it does.
+function pendingHtml() {
+  if (!day.pending) return '';
+  return `<div class="banner" style="margin-bottom:12px"><div class="grow"><b>Not sent yet.</b> ${day.pending.answered ? esc(day.pending.error) : 'The last send for this day did not reach the computer. It is sent again by itself when the computer can be reached while this screen is open.'} The notes are safe on this phone.</div>
+    <button class="primary" data-act="send">Send now</button></div>`;
+}
+
+function unsentHtml() {
+  if (!unsent.length) return '';
+  return `<div class="banner" style="margin-bottom:12px"><div class="grow"><b>Not sent from other days:</b></div>
+    ${unsent.map((u) => `<button data-act="goto-day" data-date="${esc(u.date)}" data-b="${esc(u.building)}">${esc(u.building ? `${bname(u.building)} ` : '')}${esc(formatDate(u.date))} · ${u.never ? `${u.n} never sent` : `${u.n} changed`}</button>`).join('')}</div>`;
+}
+
+// Look through every saved day for notes that were never sent or were changed after the last send.
+async function updateUnsent() {
+  const id = day.id;
+  const next = [];
+  for (const d of await listDays()) {
+    if (d.id === id) continue;
+    const n = unsentCount(d);
+    if (n) next.push({ date: d.date, building: d.building, n, never: !(d.sends || []).some((s) => s.hashes) });
+  }
+  next.sort((a, b) => (a.date < b.date ? 1 : -1));
+  unsent = next;
+  const box = document.getElementById('unsent');
+  if (box && day.id === id && view.name === 'day') box.innerHTML = unsentHtml();
+}
+
+// A send that failed is tried again, without a tap, when the phone can reach the computer again.
+// Only for the day on screen, only from the list screen, and only one try at a time.
+async function retryPending() {
+  if (retrying || !day?.pending || day.pending.answered || view.name !== 'day' || document.hidden) return;
+  retrying = true;
+  try {
+    const r = await fetch(`${receiverBase()}api/ping`, { headers: { 'X-Token': settings.receiverToken || '' } });
+    if (r.ok && day.pending && view.name === 'day') await sendDay({ quiet: true, allowBlanks: true });
+  } catch { /* still not reachable */ }
+  retrying = false;
+}
+window.addEventListener('online', retryPending);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) retryPending(); });
+setInterval(retryPending, 60000);
+
+// ===== APP-11-11  END =====
 
 // This patient's antibiotic courses that show on `date` (running, or stopped that day).
 function activeAbx(mrn, date) {
@@ -369,8 +440,9 @@ async function applyVitals() {
     const { last, first, mrn, ...readings } = m.vitals;
     p.vitals = readings;
     // Fill the vitals into a note that was already started from the template.
-    if (p.text && /Vital signs:\s+denies/.test(p.text)) {
-      p.text = p.text.replace(/Vital signs:\s+denies/, `Vital signs: ${formatVitals(readings, settings)}; denies`);
+    // APP-11-11: also the "pt denies" wording.
+    if (p.text && /Vital signs:\s+(?:pt\s+)?denies/i.test(p.text)) {
+      p.text = p.text.replace(/Vital signs:\s+((?:pt\s+)?denies)/i, (m, d) => `Vital signs: ${formatVitals(readings, settings)}; ${d}`);
     }
     n++;
   });
@@ -474,12 +546,13 @@ function renderPatient() {
   if (!p.text) {
     const loc = settings.locations[p.location];
     p.text = renderTemplate(settings, { locationText: loc?.text, pain: p.pain, vitals: p.vitals, painText: painPhrase(p) }) + ' ';
+    if (settings.varyWording !== false) p.text = varyWording(p.text, last?.note); // APP-11-11
     p.status = 'progress';
     p.fresh = true;
     saveDay(day);
   }
 
-  const highPain = p.pain != null && p.pain >= settings.highPain && /pain within acceptable limits/i.test(p.text);
+  const highPain = p.pain != null && p.pain >= settings.highPain && /pain(?: remains| level| is)? within acceptable limits/i.test(p.text); // APP-11-11: any of the wordings
   app.innerHTML = `${header}
     <div class="editor-wrap">
       ${p.vitals ? `<div class="vitals-line">Vitals: ${esc(formatVitals(p.vitals, settings))}</div>` : ''}
@@ -523,6 +596,8 @@ function renderPatient() {
     scheduleSave();
   });
   ta.addEventListener('blur', () => { flushNote(); refreshPreview(); });
+  ta.addEventListener('input', showBlankChip); // APP-11-11
+  showBlankChip();
   const cmp = app.querySelector('#compare');
   if (cmp) {
     const draw = () => {
@@ -823,7 +898,29 @@ function insertAtCursor(text) {
   const lead = before && !/\s$/.test(before) ? ' ' : '';
   ta.setRangeText(`${lead}${text} `, start, end, 'end');
   ta.focus();
+  // APP-11-11: a sentence with ___ in it: the first ___ is selected, so typing replaces it.
+  const b = nextBlank(text);
+  if (b) ta.setSelectionRange(start + lead.length + b[0], start + lead.length + b[1]);
+  showBlankChip();
   scheduleSave();
+}
+
+// APP-11-11: the "Next ___" button on the phrase bar, shown while the note has a ___ left to fill.
+function showBlankChip() {
+  const chip = document.getElementById('blank-chip');
+  const ta = document.getElementById('note');
+  if (!chip || !ta) return;
+  const n = blankCount(ta.value);
+  chip.hidden = !n;
+  chip.textContent = `Next ___ (${n})`;
+}
+function gotoBlank() {
+  const ta = document.getElementById('note');
+  if (!ta) return;
+  const b = nextBlank(ta.value, ta.selectionEnd ?? 0);
+  if (!b) return;
+  ta.focus();
+  ta.setSelectionRange(b[0], b[1]);
 }
 
 // The phrase bar sits on top of the on-screen keyboard.
@@ -835,6 +932,7 @@ function mountPhraseBar() {
   bar.className = 'phrase-bar';
   bar.innerHTML = `<div class="sheet" id="sheet" hidden></div>
     <div class="chips">
+      <button class="chip" id="blank-chip" data-blank hidden></button>
       ${pinned.map((g) => `<button class="chip group" data-group="${esc(g)}">${esc(g)} ▾</button>`).join('')}
       ${rest.map((g) => `<button class="chip group" data-group="${esc(g)}">${esc(g)} ▾</button>`).join('')}
       <button class="chip group" data-group="*">All ▾</button>
@@ -848,6 +946,7 @@ function mountPhraseBar() {
     const b = e.target.closest('button');
     if (!b) return;
     const sheet = bar.querySelector('#sheet');
+    if ('blank' in b.dataset) { gotoBlank(); return; } // APP-11-11
     if (b.dataset.group) {
       const g = b.dataset.group;
       if (!sheet.hidden && sheet.dataset.group === g) { sheet.hidden = true; return; }
@@ -891,7 +990,15 @@ function toBase64(bytes) {
   return btoa(bin);
 }
 
-async function sendDay({ overwrite = false } = {}) {
+// APP-11-11: `quiet` = a retry made without a tap (no screen change when it fails again);
+// `allowBlanks` = send even though a note still has a ___ in it.
+async function sendDay({ overwrite = false, quiet = false, allowBlanks = false } = {}) {
+  if (view.name === 'patient') await flushNote();
+  const blanks = day.patients.map((p, i) => (blankCount(p.text) ? `${i + 1}. ${p.last}, ${p.first}` : '')).filter(Boolean);
+  if (blanks.length && !allowBlanks && !overwrite) {
+    go({ name: 'log', blanks });
+    return;
+  }
   const send = nextSend(day);
   const { filename, content, bytes } = dayFile();
   const logLine = logLines(day, [send])[0];
@@ -907,18 +1014,34 @@ async function sendDay({ overwrite = false } = {}) {
     });
     if (res.status === 409) {
       // A file with this name is in the Daily folder and wasn't made by this app: ask before replacing it.
-      go({ name: 'log', conflict: { filename } });
+      if (!quiet) go({ name: 'log', conflict: { filename } });
       return;
     }
-    if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token. Check Settings.' : `Receiver error ${res.status}`);
+    if (!res.ok) {
+      // APP-11-11: the computer says in words what went wrong (file open in Word, notes drive not plugged in).
+      const why = await res.json().catch(() => ({}));
+      throw Object.assign(new Error(res.status === 401 ? 'The receiver rejected the token. Check Settings.' : why.message || `Receiver error ${res.status}`), { answered: true });
+    }
     const info = await res.json().catch(() => ({}));
     if (info.renamed?.length) toast(`Renamed ${info.renamed.join(', ')} to ${bname(day.building)} on the computer`, 4000);
+    // APP-11-11: keep the computer's receipt with the send, and show it on the list.
+    if (info.receiptText) {
+      send.receipt = String(info.receiptText);
+      send.receiptOk = !(info.receipt?.problems?.length || info.receipt?.notFound?.length);
+      lastReceipt = { id: day.id, n: send.n, text: send.receipt, ok: send.receiptOk };
+    } else lastReceipt = null;
+    delete day.pending;
     day.sends.push(send);
     await saveDay(day);
     if (!info.renamed?.length) toast(`Sent ${info.file || filename} (send #${send.n})`);
     render();
   } catch (err) {
-    go({ name: 'log', fallback: { send, error: err.message } });
+    // APP-11-11: remember that this day still has to be sent.
+    // `answered` = the computer was reached and said no (file open in Word, drive missing, wrong token): that is not
+    // tried again by itself, because the computer keeps a copy of every send it could not save.
+    day.pending = { at: Date.now(), error: err.message, answered: !!err.answered || /^No computer address/.test(err.message) };
+    await saveDay(day);
+    if (!quiet) go({ name: 'log', fallback: { send, error: err.message } });
   }
 }
 
@@ -951,8 +1074,10 @@ function renderLog() {
   app.innerHTML = `
     <div class="top">
       <button class="ghost" data-act="back">‹ List</button>
-      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : conflict ? 'File already there' : 'Send log'}</h1></div>
+      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : conflict ? 'File already there' : view.blanks ? 'Blanks left to fill' : 'Send log'}</h1></div>
     </div>
+    ${view.blanks ? `<div class="banner" style="margin-bottom:12px"><div>These notes still have a ___ that was not filled in: <b>${esc(view.blanks.join('; '))}</b>. Nothing was sent.</div>
+      <button class="primary" data-act="back">Go back and fill them</button><button data-act="send-blanks">Send anyway</button></div>` : ''}
     ${fb ? `<div class="banner" style="margin-bottom:12px">${esc(fb.error.startsWith('Failed') || fb.error.includes('NetworkError') ? 'The computer could not be reached. Check that Tailscale is on and the receiver is running. You can also save the Word file and put it in the building\'s Daily folder yourself.' : fb.error)}</div>
       <div class="row" style="margin-bottom:12px"><button class="primary grow" data-act="retry">Try again</button></div>` : ''}
     ${conflict ? `<div class="banner" style="margin-bottom:12px">${esc(conflict.filename)} is already in the Daily folder and was not made by this app. Replace it?
@@ -964,6 +1089,8 @@ function renderLog() {
     </div>
     <h2>${esc(day.building ? `${bname(day.building)} · ` : '')}${esc(formatDate(day.date))}</h2>
     ${lines.length ? `<pre class="summary">${esc(lines.join('\n'))}</pre>` : '<p class="muted">Nothing sent yet for this day.</p>'}
+    ${day.sends.filter((x) => x.receipt).slice(-3).reverse().map((x) => `<div class="card" style="margin:8px 0;border-left:4px solid var(${x.receiptOk ? '--good' : '--amber'})">
+      <b class="small">Computer's receipt for send #${x.n}</b><div class="small" style="white-space:pre-wrap">${esc(x.receipt)}</div></div>`).join('')}
     ${day.sends.length && changed.length ? `<p class="small" style="color:var(--amber)">${changed.length} patient(s) changed since the last send.</p>` : ''}
     ${!fb && !conflict && day.sends.some((s) => s.kind !== 'deleted') ? `<div style="margin:10px 0">
       <button class="ghost danger" data-act="del-file">Delete this day's file from computer</button>
@@ -1006,6 +1133,7 @@ async function shareDayFile() {
   if (view.fallback) {
     const { send } = view.fallback;
     send.via = 'share';
+    delete day.pending; // APP-11-11
     day.sends.push(send);
     await saveDay(day);
     toast('Shared. Logged as sent.');
@@ -1174,6 +1302,7 @@ function renderSettings() {
       <h2>Note template</h2>
       <p class="small muted">{location} is filled by the location button, {pain} by the keypad, {vitals} by loaded vitals (left blank otherwise).</p>
       <textarea id="s-template" rows="6">${esc(s.template)}</textarea>
+      <label class="check"><input type="checkbox" id="s-vary" ${s.varyWording !== false ? 'checked' : ''}> Vary the wording of the routine sentences from day to day (same meaning, nothing added)</label>
 
       <h2>Location buttons</h2>
       <div class="stack" id="s-locs">${s.locations.map((l) => `
@@ -1209,6 +1338,13 @@ function renderSettings() {
       <label>Receiver token (shown when you start the receiver)<input id="s-token" class="mono" value="${esc(s.receiverToken)}" autocomplete="off"></label>
       <button data-act="test-receiver">Test connection</button>
 
+      <h2>Backup</h2>
+      <p class="small muted">Saves every day, note and antibiotic course on this phone into one file in Downloads. The file holds patient notes, so keep it on the phone or your own computer. Restore only adds days that are not on this phone; it never replaces a day that is here.</p>
+      <div class="row">
+        <button data-act="backup">Save a backup file</button>
+        <label class="btn" style="display:flex;align-items:center;color:var(--ink)">Restore from a backup<input type="file" id="s-restore" accept=".json,application/json" hidden></label>
+      </div>
+
       <h2>Reset</h2>
       <button class="danger" data-act="reset-phrases">Restore starter phrases</button>
       <p class="small muted">App version ${APP_VERSION} · opened from ${esc(location.origin + location.pathname)}</p>
@@ -1219,6 +1355,20 @@ function renderSettings() {
     app.querySelectorAll('#s-phrases .phrase-row').forEach((r) => {
       r.hidden = q && !r.textContent.toLowerCase().includes(q) && ![...r.querySelectorAll('input,textarea')].some((i) => i.value.toLowerCase().includes(q));
     });
+  });
+  // APP-11-11
+  app.querySelector('#s-restore').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const r = await importAll(JSON.parse(await f.text()));
+      abx = await getAbx();
+      day = await loadDay(day.date, day.building);
+      toast(`Restored ${r.days} day${r.days === 1 ? '' : 's'}${r.skipped ? `; ${r.skipped} already on this phone were left as they are` : ''}`, 5000);
+    } catch (err) {
+      toast(err instanceof SyntaxError ? 'That file could not be read as a backup.' : err.message, 5000);
+    }
+    e.target.value = '';
   });
   app.querySelector('#s-import').addEventListener('change', async (e) => {
     const f = e.target.files[0];
@@ -1253,6 +1403,7 @@ function readSettingsForm() {
     providerName: q('#s-provider').value.trim(),
     abxList: [...new Set(q('#s-abx').value.split('\n').map((x) => x.trim()).filter(Boolean))],
     template: q('#s-template').value,
+    varyWording: q('#s-vary').checked, // APP-11-11
     locations: [...app.querySelectorAll('#s-locs .phrase-row')].map((r) => ({
       key: r.querySelector('.k').value.trim(), text: r.querySelector('.t').value.trim(), label: r.querySelector('.grp').value.trim(),
     })),
@@ -1310,7 +1461,7 @@ app.addEventListener('click', async (e) => {
     case 'carry': {
       const last = view.last;
       Object.assign(p, {
-        text: carryForward(last.note, p.vitals, settings),
+        text: settings.varyWording !== false ? varyWording(carryForward(last.note, p.vitals, settings), last.note) : carryForward(last.note, p.vitals, settings), // APP-11-11
         location: last.location ?? null,
         pain: last.pain ?? null,
         painSide: last.painSide || '',
@@ -1494,19 +1645,36 @@ app.addEventListener('click', async (e) => {
       break;
     case 'drop-pain-sentence': {
       const ta = app.querySelector('#note');
-      ta.value = ta.value.replace(/\s*Pt's pain within acceptable limits\./i, '');
+      ta.value = ta.value.replace(/\s*(?:Pt's pain|Pain(?: remains| level| is)?) within acceptable limits\./i, ''); // APP-11-11: any of the wordings
       app.querySelector('#painbanner')?.remove();
       await flushNote();
       break;
     }
     case 'send': await sendDay(); break;
+    // APP-11-11
+    case 'send-blanks': history.back(); setTimeout(() => sendDay({ allowBlanks: true }), 50); break;
+    case 'receipt-ok': lastReceipt = null; render(); break;
+    case 'goto-day': {
+      const b2 = b.dataset.b;
+      if (b2 && settings.buildings.includes(b2)) { settings.currentBuilding = b2; await saveSettings(settings); }
+      day = await loadDay(b.dataset.date, b2);
+      try { sessionStorage.setItem('date', day.date); } catch { /* ignore */ }
+      render();
+      break;
+    }
+    case 'backup': {
+      const data = await exportAll();
+      downloadText(`Bedside backup ${todayIso()}.json`, JSON.stringify(data), 'application/json');
+      toast(`Backup saved to Downloads: ${data.days.filter((d) => d.patients.length).length} days`, 4000);
+      break;
+    }
     case 'install':
       if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); }
       break;
-    case 'retry': history.back(); setTimeout(sendDay, 50); break;
+    case 'retry': history.back(); setTimeout(() => sendDay({ allowBlanks: true }), 50); break;
     case 'share': await shareDayFile(); break;
     case 'download': downloadDayFile(); break;
-    case 'send-overwrite': history.back(); setTimeout(() => sendDay({ overwrite: true }), 50); break;
+    case 'send-overwrite': history.back(); setTimeout(() => sendDay({ overwrite: true, allowBlanks: true }), 50); break;
     case 'copy-summary': copyText(buildSummary(named())); break;
     case 'save-settings':
       settings = readSettingsForm();

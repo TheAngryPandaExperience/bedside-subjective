@@ -67,6 +67,49 @@ export const DEFAULT_PHRASES = [
   { key: 'cccs', group: 'Words', text: 'continues' },
 ];
 
+
+// ===== APP-11-11  START: "Today's decisions" buttons and varied wording =====
+// Both lists are the ones tested on the computer against the Note Updater (F:\\Bedside app\\phrases).
+// Today's decisions: one tap writes the sentence; ___ is what gets typed. They show as the "Decisions" group on the phrase bar.
+export const DECISION_GROUP = 'Decisions';
+export const DECISION_PHRASES = [
+  { key: ".inc", group: DECISION_GROUP, text: "Increased ___ to ___ for ___." }, // Medication: Increased
+  { key: ".dec", group: DECISION_GROUP, text: "Decreased ___ to ___ for ___." }, // Medication: Decreased
+  { key: ".start", group: DECISION_GROUP, text: "Started ___ for ___." }, // Medication: Started
+  { key: ".stop", group: DECISION_GROUP, text: "Stopped ___ due to ___." }, // Medication: Stopped
+  { key: ".held", group: DECISION_GROUP, text: "Held ___ today for ___." }, // Medication: Held
+  { key: ".cont", group: DECISION_GROUP, text: "Continue ___, no changes today." }, // Medication: Continue, no change
+  { key: ".lab", group: DECISION_GROUP, text: "Ordered ___ for ___." }, // Tests: Ordered labs
+  { key: ".ua", group: DECISION_GROUP, text: "Ordered UA with culture for ___." }, // Tests: Ordered UA
+  { key: ".xr", group: DECISION_GROUP, text: "Ordered ___ x-ray for ___." }, // Tests: Ordered imaging
+  { key: ".res", group: DECISION_GROUP, text: "Reviewed labs from ___: ___." }, // Tests: Reviewed results
+  { key: ".hosp", group: DECISION_GROUP, text: "Reviewed hospital discharge summary from ___." }, // Records: Hospital records
+  { key: ".spec", group: DECISION_GROUP, text: "Reviewed ___ consult note from ___." }, // Records: Specialist note
+  { key: ".cm", group: DECISION_GROUP, text: "Discussed plan of care with case manager: ___." }, // Discussed: Case manager
+  { key: ".dr", group: DECISION_GROUP, text: "Discussed with Dr. ___ (___): ___." }, // Discussed: Physician / specialist
+  { key: ".fam", group: DECISION_GROUP, text: "History obtained from ___ as pt is unable to give a reliable history." }, // Discussed: History from family
+  { key: ".ed", group: DECISION_GROUP, text: "Sent pt to the ED for ___." }, // Level of care: Sent to ED
+  { key: ".tip", group: DECISION_GROUP, text: "Hospitalization discussed for ___; decision made to treat in the facility: ___." }, // Level of care: Treat in place
+  { key: ".stable", group: DECISION_GROUP, text: "___ stable on current regimen." }, // Problem status: Stable
+  { key: ".goal", group: DECISION_GROUP, text: "___ not at goal: ___." }, // Problem status: Not at goal
+  { key: ".worse", group: DECISION_GROUP, text: "___ worse today: ___." }, // Problem status: Worse
+  { key: ".newp", group: DECISION_GROUP, text: "New problem today: ___." }, // Problem status: New problem
+];
+// Varied wording: each row says the same thing in different words and adds no finding. The first is the wording used until now.
+export const PHRASE_VARIANTS = [
+  ["Pt assessed up at bedside.", "Pt seen up at bedside.", "Assessed pt up at bedside.", "Pt evaluated up at bedside."],
+  ["Pt assessed in wheelchair.", "Pt seen in wheelchair.", "Assessed pt in wheelchair.", "Pt evaluated in wheelchair."],
+  ["Pt denies breathing complications.", "Denies any breathing complications.", "No breathing complications reported.", "Pt reports no breathing complications."],
+  ["Pt's pain within acceptable limits.", "Pain remains within acceptable limits.", "Pain level within acceptable limits.", "Pain is within acceptable limits."],
+  ["No s/sx of sedation.", "No signs or symptoms of sedation.", "No sedation noted.", "Without s/sx of sedation."],
+  ["Pt denies constipation.", "Denies constipation.", "No constipation reported.", "Pt reports no constipation."],
+  ["Fair appetite, adequate fluids intake.", "Appetite fair, fluid intake adequate.", "Fair appetite with adequate fluid intake.", "Appetite is fair, fluids intake adequate."],
+  ["Pt continues to work with therapy.", "Continues working with therapy.", "Pt still working with therapy.", "Pt continues with therapy."],
+];
+// The sentence after the vital signs ("Vital signs: <readings>; denies ..."). Every wording keeps the word "denies".
+export const VITALS_TAILS = ["denies HAs, dizziness or chest pain.", "denies chest pain, dizziness or HAs.", "pt denies HAs, chest pain or dizziness."];
+// ===== APP-11-11  END =====
+
 // Antibiotics to pick from on the ABX detail. A name in brackets helps the search but stays out of the note.
 export const DEFAULT_ABX = [
   'Amoxicillin', 'Amoxicillin-clavulanate (Augmentin)', 'Ampicillin', 'Ampicillin-sulbactam (Unasyn)', 'Azithromycin (Zithromax)',
@@ -80,8 +123,8 @@ export const DEFAULT_ABX = [
 export const DEFAULT_SETTINGS = {
   template: DEFAULT_TEMPLATE,
   locations: DEFAULT_LOCATIONS,
-  phrases: DEFAULT_PHRASES,
-  pinned: ['Assessment', 'Pain', 'Treatment', 'Education', 'Meds'],
+  phrases: [...DEFAULT_PHRASES, ...DECISION_PHRASES], // APP-11-11
+  pinned: [DECISION_GROUP, 'Assessment', 'Pain', 'Treatment', 'Education', 'Meds'],
   highPain: 7,
   fastingStart: '04:00',
   fastingEnd: '09:00',
@@ -95,6 +138,7 @@ export const DEFAULT_SETTINGS = {
   abxList: DEFAULT_ABX,
   addedDefaults: [], // starter items added to existing installs by later versions
   providerName: '',
+  varyWording: true, // APP-11-11: routine sentences are worded a little differently each day (Settings turns it off)
 };
 
 // Quick details on each patient, in note order. All optional; note.js fullNote() puts each in its place.

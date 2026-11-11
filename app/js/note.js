@@ -1,7 +1,7 @@
 // Pure note logic: template filling, shortcut expansion, daily summary and send log.
 
 import { formatVitals } from './parsers.js';
-import { DETAILS } from './defaults.js';
+import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS } from './defaults.js';
 
 const joinAnd = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
 
@@ -123,8 +123,9 @@ export function fullNote(p) {
     if (next == null) tail.push(add); else text = next;
   };
   place(['overnight', 'nursing', 'new'], /^[^.!?]*[.!?]/);
-  place(['meal'], /\b(?:good|fair|poor)\s+appetite[^.]*\./i);
-  place(['therapy'], /\b(?:continues to work with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
+  // APP-11-11: also the varied wordings ("Appetite fair, ...", "Appetite is fair, ...", "Pt continues with therapy.")
+  place(['meal'], /\b(?:(?:good|fair|poor)\s+appetite|appetite\s+(?:is\s+)?(?:good|fair|poor))[^.]*\./i);
+  place(['therapy'], /\b(?:continues to work with|continues with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
   for (const k of ['pain', 'abx', 'said']) if (d[k]) tail.push(d[k]);
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
@@ -136,8 +137,68 @@ export function fullNote(p) {
  */
 export function carryForward(lastNote, todayVitals, settings) {
   const vit = formatVitals(todayVitals, settings);
-  return stripAbx(String(lastNote)).trim().replace(/Vital signs:.*?(?=\bdenies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
+  return stripAbx(String(lastNote)).trim().replace(/Vital signs:.*?(?=\b(?:pt\s+)?denies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
 }
+
+// ===== APP-11-11  START: varied wording and blanks =====
+
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A whole sentence only: at the start or after a sentence end, and followed by a space or the end.
+const sentenceRe = (s) => new RegExp(`(^|[.!?]\\s+)${escRe(s)}(?=\\s|$)`);
+const VITALS_TAIL_RE = new RegExp(`(Vital signs:[^\\n]*?)\\b(${VITALS_TAILS.map(escRe).sort((a, b) => b.length - a.length).join('|')})`, 'i');
+
+/**
+ * Reword the routine sentences of a note. Only a sentence that is exactly one of the tested wordings is changed
+ * (a sentence that was edited is left alone), and it is swapped for another tested wording of the same sentence.
+ * A wording that is in `avoid` (the last note) is not picked while another is available.
+ * `rnd` returns a number from 0 up to 1 (Math.random); tests pass their own.
+ */
+export function varyWording(text, avoid = '', rnd = Math.random) {
+  let out = String(text);
+  const prev = String(avoid || '');
+  const pick = (list, used) => {
+    const ok = list.filter((v) => !used(v));
+    const from = ok.length ? ok : list;
+    return from[Math.min(from.length - 1, Math.floor(rnd() * from.length))];
+  };
+  for (const family of PHRASE_VARIANTS) {
+    const have = family.find((v) => sentenceRe(v).test(out));
+    if (!have) continue;
+    const next = pick(family, (v) => sentenceRe(v).test(prev));
+    if (next !== have) out = out.replace(sentenceRe(have), (m, lead) => lead + next);
+  }
+  const m = VITALS_TAIL_RE.exec(out);
+  if (m) {
+    const was = VITALS_TAIL_RE.exec(prev)?.[2].toLowerCase();
+    const next = pick(VITALS_TAILS, (v) => v.toLowerCase() === was);
+    out = out.slice(0, m.index) + m[1] + next + out.slice(m.index + m[0].length);
+  }
+  return out;
+}
+
+/** How many ___ blanks (from a "Today's decisions" sentence) are still in the text. */
+export function blankCount(text) {
+  return (String(text || '').match(/_{3,}/g) || []).length;
+}
+
+/** Where the next ___ is at or after `from` (wrapping to the start), as [start, end]; null when there is none. */
+export function nextBlank(text, from = 0) {
+  const re = /_{3,}/g;
+  let first = null;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    first ??= [m.index, m.index + m[0].length];
+    if (m.index >= from) return [m.index, m.index + m[0].length];
+  }
+  return first;
+}
+
+/** A sent day has notes that were written or changed after the last send, or was never sent at all. */
+export function unsentCount(day) {
+  if (!day.patients.some((p) => p.text)) return 0;
+  return changedSinceSend(day).length + ((day.sends || []).some((s) => s.hashes) ? removedSinceSend(day).length : 0);
+}
+
+// ===== APP-11-11  END =====
 
 // ---------- antibiotics ----------
 // A course: { id, drug, route: 'oral' | 'IV', start: 'YYYY-MM-DD', days: 14 (or 0 = length not set),
