@@ -139,6 +139,7 @@ export const DEFAULT_SETTINGS = {
   addedDefaults: [], // starter items added to existing installs by later versions
   providerName: '',
   varyWording: true, // APP-11-11: routine sentences are worded a little differently each day (Settings turns it off)
+  bmHow: 'both', // APP-11-20: how the BM sentence is written; the BM panel changes it
 };
 
 // Quick details on each patient, in note order. All optional; note.js fullNote() puts each in its place.
@@ -157,8 +158,28 @@ export const DETAILS = [
     numberText: (v) => `Pt ambulated ${v} ft with therapy`,
     quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
   { key: 'abx', label: 'ABX' },
+  { key: 'bm', label: 'BM' }, // APP-11-20: when the last BM was (see note.js bmSentence)
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
+  { key: 'exam', label: 'Exam' }, // APP-11-20: goes out as "Exam: Resp: ..." lines under the patient, not in the note text
 ];
+
+// ===== APP-11-20  START: exam section and BM button =====
+// Exam findings by body system. Tap one to use it, then edit it if needed, or type your own.
+// Only the systems you fill in are sent; the Note Updater (version 82) changes only those in the day's note.
+export const EXAM_SYSTEMS = [
+  { key: 'General', presets: ['NAD, alert', 'Appears fatigued', 'Appears uncomfortable'] },
+  { key: 'HEENT', presets: ['NCAT, mucous membranes moist', 'Mucous membranes dry'] },
+  { key: 'Resp', presets: ['Clear to auscultation bilaterally, no wheezes or crackles', 'Diminished at the bases', 'Bibasilar crackles', 'Scattered wheezes'] },
+  { key: 'CV', presets: ['RRR, no murmur', 'Irregularly irregular, no murmur'] },
+  { key: 'Abd', presets: ['Soft, non-tender, non-distended, bowel sounds present', 'Distended', 'Tender to palpation'] },
+  { key: 'Ext', presets: ['No lower leg edema', 'Trace lower leg edema', '1+ bilateral lower leg edema', '2+ bilateral lower leg edema'] },
+  { key: 'Skin', presets: ['Warm, dry, intact', 'Dressing clean, dry, intact'] },
+  { key: 'Neuro', presets: ['Alert and oriented x3, follows commands', 'Alert, oriented to self', 'No focal deficits'] },
+  { key: 'Psych', presets: ['Calm, cooperative', 'Anxious', 'Flat affect'] },
+];
+// How the BM sentence is written: "Last BM yesterday (11/18/26)." / "Last BM yesterday." / "Last BM 11/18/26."
+export const BM_HOW = [['both', 'Both'], ['word', 'Word only'], ['date', 'Date only']];
+// ===== APP-11-20  END =====
 
 // Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
 // "Pain 6/10 to right knee and hip, aching and sharp."

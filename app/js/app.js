@@ -2,16 +2,16 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines } from './note.js';
 import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
-import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
 // 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
 // and safety for notes that were not sent. Every changed place is marked APP-11-11.
-const APP_VERSION = 15;
+const APP_VERSION = 16;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -617,11 +617,15 @@ function mountDetails(p, openKey) {
   const box = app.querySelector('#details');
   p.fields ??= {};
   let open = openKey;
-  const filled = (d) => (d.key === 'pain' ? p.pain != null : d.key === 'abx' ? activeAbx(p.mrn, day.date).length > 0 : String(p.fields[d.key] ?? '').trim() !== '');
+  const filled = (d) => (d.key === 'pain' ? p.pain != null : d.key === 'abx' ? activeAbx(p.mrn, day.date).length > 0
+    : d.key === 'bm' ? !!p.bm?.date : d.key === 'exam' ? examLines(p).length > 0 // APP-11-20
+      : String(p.fields[d.key] ?? '').trim() !== '');
   const filledAbx = () => activeAbx(p.mrn, day.date).length;
   const shown = (d) => {
     if (d.key === 'pain') return p.pain != null ? `${p.pain}/10` : '';
     if (d.key === 'abx') return String(filledAbx() || '');
+    if (d.key === 'bm') return bmSentence(p).replace(/^Last BM |\.$/g, ''); // APP-11-20
+    if (d.key === 'exam') return String(examLines(p).length || '');
     const v = String(p.fields[d.key] ?? '');
     return d.unit === '%' && /\d$/.test(v) ? `${v}%` : v;
   };
@@ -629,10 +633,11 @@ function mountDetails(p, openKey) {
   const preview = () => {
     if (!box.isConnected) return;
     // Show the whole note as it will be sent, with the details in their places.
-    if (!detailSentences(p).length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
+    const ex = examLines(p); // APP-11-20: the exam lines are shown under the note, as they will be sent
+    if (!detailSentences(p).length && !ex.length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
     const ta = document.getElementById('note');
     const shown = ta ? { ...p, text: ta.value } : p;
-    app.querySelector('#detail-preview').innerHTML = `<div class="muted">As it will be sent:</div>${esc(fullNote(shown))}`;
+    app.querySelector('#detail-preview').innerHTML = `<div class="muted">As it will be sent:</div>${esc(fullNote(shown))}${ex.map((x) => `<div>${esc(x)}</div>`).join('')}`;
   };
   const save = async () => {
     p.updatedAt = Date.now();
@@ -644,6 +649,8 @@ function mountDetails(p, openKey) {
     const idx = DETAILS.indexOf(d);
     const next = DETAILS[idx + 1];
     if (d.key === 'abx') return `<div class="dpanel">${abxPanel(p)}${panelNav(next, false)}</div>`;
+    if (d.key === 'bm') return `<div class="dpanel">${bmPanel(p)}${panelNav(next)}</div>`; // APP-11-20
+    if (d.key === 'exam') return `<div class="dpanel">${examPanel(p)}${panelNav(next)}</div>`;
     if (d.key === 'pain') {
       return `<div class="dpanel"><div class="dkeys">
         ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => `<button data-dv="${k}" class="${p.pain === k ? 'on' : ''}">${k}</button>`).join('')}
@@ -674,6 +681,24 @@ function mountDetails(p, openKey) {
     });
   };
 
+  // APP-11-20: typing in the BM date box or in an exam box
+  box.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.id === 'bmdate') {
+      const iso = parseBmDate(t.value, day.date);
+      const hint = box.querySelector('#bmhint');
+      if (iso) p.bm = { date: iso, dos: day.date, how: p.bm?.how || settings.bmHow || 'both' };
+      else if (!t.value.trim()) delete p.bm;
+      if (hint) hint.textContent = iso ? bmSentence(p) : t.value.trim() ? 'Type the date as 11/15 or 11/15/26. It cannot be after the date of service.' : '';
+      if (!iso && t.value.trim()) return;
+    } else if (t.dataset.exinput) {
+      p.exam ??= {};
+      if (t.value.trim()) p.exam[t.dataset.exinput] = t.value; else delete p.exam[t.dataset.exinput];
+    } else return;
+    clearTimeout(box._t2);
+    box._t2 = setTimeout(save, 300);
+  });
+
   box.addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -682,7 +707,22 @@ function mountDetails(p, openKey) {
     else if (b.dataset.dnext) open = b.dataset.dnext;
     else if ('dclose' in b.dataset) open = null;
     else if ('dclear' in b.dataset) {
-      if (open === 'pain') setPain(p, null); else delete p.fields[open];
+      if (open === 'pain') setPain(p, null);
+      else if (open === 'bm') delete p.bm; // APP-11-20
+      else if (open === 'exam') delete p.exam;
+      else delete p.fields[open];
+      await save();
+    } else if (b.dataset.bm) { // APP-11-20: Yesterday / Today, counted from the date of service
+      const date = b.dataset.bm === 'today' ? day.date : addDays(day.date, -1);
+      if (p.bm?.date === date) delete p.bm; else p.bm = { date, dos: day.date, how: p.bm?.how || settings.bmHow || 'both' };
+      await save();
+    } else if (b.dataset.bmhow) {
+      settings.bmHow = b.dataset.bmhow;
+      await saveSettings(settings);
+      if (p.bm) { p.bm.how = b.dataset.bmhow; await save(); }
+    } else if (b.dataset.exsys) { // APP-11-20: tap an exam finding to use it, tap it again to clear it
+      p.exam ??= {};
+      if (p.exam[b.dataset.exsys] === b.dataset.exv) delete p.exam[b.dataset.exsys]; else p.exam[b.dataset.exsys] = b.dataset.exv;
       await save();
     } else if (b.dataset.dv != null) {
       if (open === 'pain') setPain(p, +b.dataset.dv);
@@ -696,6 +736,36 @@ function mountDetails(p, openKey) {
   refreshPreview = preview;
   redrawDetails = () => { if (box.isConnected) { draw(); preview(); } };
 }
+
+// ===== APP-11-20  START: BM and Exam panels =====
+// BM: Yesterday and Today are counted from the date of service; any other day is typed as a date.
+function bmPanel(p) {
+  const b = p.bm;
+  const yest = addDays(day.date, -1);
+  const how = b?.how || settings.bmHow || 'both';
+  const typed = b?.date && b.date !== day.date && b.date !== yest ? (() => { const [y, m, d] = b.date.split('-').map(Number); return `${m}/${d}/${String(y).slice(-2)}`; })() : '';
+  return `<div class="small muted">Last BM</div>
+    <div class="row">
+      <button class="dpreset ${b?.date === yest ? 'on' : ''}" data-bm="yesterday">Yesterday</button>
+      <button class="dpreset ${b?.date === day.date ? 'on' : ''}" data-bm="today">Today</button>
+      <input id="bmdate" value="${esc(typed)}" placeholder="or date: 11/15" inputmode="text" autocomplete="off" style="flex:1;min-width:9rem">
+    </div>
+    <div class="small muted">How it is written</div>
+    <div class="row">${BM_HOW.map(([k, label]) => `<button class="dpreset ${how === k ? 'on' : ''}" data-bmhow="${k}">${esc(label)}</button>`).join('')}</div>
+    <div class="small" id="bmhint">${esc(bmSentence(p))}</div>`;
+}
+
+// Exam: one box per body system. Only the systems filled in are sent, as "Exam: Resp: ..." lines under the patient.
+function examPanel(p) {
+  const e = p.exam || {};
+  return `<div class="small muted">Fill in only what you examined or what changed. The rest of the note's exam is left as it is.</div>
+    ${EXAM_SYSTEMS.map((s) => `<div>
+      <div class="small" style="font-weight:700;margin:4px 0">${esc(s.key)}</div>
+      ${s.presets.map((q) => `<button class="dpreset ${e[s.key] === q ? 'on' : ''}" data-exsys="${esc(s.key)}" data-exv="${esc(q)}" style="margin:0 6px 6px 0">${esc(q)}</button>`).join('')}
+      <input data-exinput="${esc(s.key)}" value="${esc(e[s.key] ?? '')}" placeholder="Type or edit ${esc(s.key)}…" autocomplete="off" style="width:100%">
+    </div>`).join('')}`;
+}
+// ===== APP-11-20  END =====
 
 // ---------- antibiotics (the ABX detail) ----------
 

@@ -1,7 +1,7 @@
 // Pure note logic: template filling, shortcut expansion, daily summary and send log.
 
 import { formatVitals } from './parsers.js';
-import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS } from './defaults.js';
+import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS, EXAM_SYSTEMS } from './defaults.js';
 
 const joinAnd = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
 
@@ -78,6 +78,8 @@ function detailMap(p) {
       if (p.abx?.length) out.abx = p.abx.join(' ');
       continue;
     }
+    if (d.key === 'bm') { const s = bmSentence(p); if (s) out.bm = s; continue; } // APP-11-20
+    if (d.key === 'exam') continue; // APP-11-20: exam findings go out as their own lines (examLines), never in the note text
     let v = String(f[d.key] ?? '').trim();
     if (!v) continue;
     const num = numberValue(v, d.unit);
@@ -126,6 +128,7 @@ export function fullNote(p) {
   // APP-11-11: also the varied wordings ("Appetite fair, ...", "Appetite is fair, ...", "Pt continues with therapy.")
   place(['meal'], /\b(?:(?:good|fair|poor)\s+appetite|appetite\s+(?:is\s+)?(?:good|fair|poor))[^.]*\./i);
   place(['therapy'], /\b(?:continues to work with|continues with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
+  place(['bm'], /\bconstipation[^.]*\./i); // APP-11-20: the BM sentence follows the constipation sentence
   for (const k of ['pain', 'abx', 'said']) if (d[k]) tail.push(d[k]);
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
@@ -137,8 +140,52 @@ export function fullNote(p) {
  */
 export function carryForward(lastNote, todayVitals, settings) {
   const vit = formatVitals(todayVitals, settings);
-  return stripAbx(String(lastNote)).trim().replace(/Vital signs:.*?(?=\b(?:pt\s+)?denies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
+  // APP-11-20: yesterday's "Last BM ..." sentence is about that day, so it is not carried into today's note
+  const kept = stripAbx(String(lastNote)).replace(/\s*\bLast BM [^.]*\./g, '');
+  return kept.trim().replace(/Vital signs:.*?(?=\b(?:pt\s+)?denies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
 }
+
+// ===== APP-11-20  START: BM sentence and exam lines =====
+const mdy = (iso) => { const [y, m, d] = iso.split('-').map(Number); return `${m}/${d}/${String(y).slice(-2)}`; };
+
+/**
+ * "Last BM yesterday (11/18/26)." from p.bm = { date, dos, how }. "today" and "yesterday" are counted from the
+ * date of service, not from the phone's clock. Any other day is written as its date. '' when no BM date is set.
+ */
+export function bmSentence(p) {
+  const b = p.bm;
+  if (!b?.date || !b.dos) return '';
+  const diff = dayNo(b.dos) - dayNo(b.date);
+  const word = diff === 0 ? 'today' : diff === 1 ? 'yesterday' : '';
+  const how = b.how || 'both';
+  if (!word || how === 'date') return `Last BM ${mdy(b.date)}.`;
+  if (how === 'word') return `Last BM ${word}.`;
+  return `Last BM ${word} (${mdy(b.date)}).`;
+}
+
+/**
+ * A typed date ("11/15", "11/15/26", "11-15-2026") as YYYY-MM-DD, or '' when it is not a real date or is after the
+ * date of service. With no year typed, it is the most recent such day on or before the date of service.
+ */
+export function parseBmDate(text, dos) {
+  const m = String(text).trim().match(/^(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2}|\d{4}))?$/);
+  if (!m || !dos) return '';
+  const [dy] = dos.split('-').map(Number);
+  let y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : dy;
+  const iso = (yy) => `${yy}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}`;
+  const real = (s) => { const t = new Date(`${s}T00:00:00Z`); return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === s; };
+  if (!m[3] && real(iso(y)) && iso(y) > dos) y -= 1;
+  const out = iso(y);
+  return real(out) && out <= dos ? out : '';
+}
+
+/** The filled-in exam systems as lines for the daily summary: ["Exam: Resp: Bibasilar crackles", ...]. */
+export function examLines(p) {
+  const e = p.exam || {};
+  return EXAM_SYSTEMS.map((s) => [s.key, String(e[s.key] ?? '').replace(/\s+/g, ' ').trim()])
+    .filter(([, v]) => v).map(([k, v]) => `Exam: ${k}: ${v}`);
+}
+// ===== APP-11-20  END =====
 
 // ===== APP-11-11  START: varied wording and blanks =====
 
@@ -282,7 +329,8 @@ export function wordDiff(before, after) {
 /** The same text as a fingerprint, so an edit after sending can be detected. */
 export function noteHash(p) {
   // Notes without details hash as before, so earlier sends don't all look changed.
-  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}`;
+  const ex = examLines(p); // APP-11-20: a changed exam line counts as a change; notes without one hash as before
+  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}${ex.length ? `|${ex.join('|')}` : ''}`;
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h.toString(36);
@@ -360,6 +408,7 @@ export function summaryLines(day) {
     const text = p.text ? fullNote(p).replace(/\s+/g, ' ').trim() : '';
     const name = `${String(p.last).trim().toUpperCase()}, ${String(p.first).trim().toUpperCase()}`;
     lines.push(`${name} (${p.mrn}): ${text || 'New pt'}`);
+    lines.push(...examLines(p)); // APP-11-20: read by Note Updater version 82 and later
   }
   return lines;
 }
