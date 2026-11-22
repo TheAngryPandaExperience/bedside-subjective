@@ -6,12 +6,12 @@ import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences
 import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
-import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
 // 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
 // and safety for notes that were not sent. Every changed place is marked APP-11-11.
-const APP_VERSION = 16;
+const APP_VERSION = 17;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -687,7 +687,7 @@ function mountDetails(p, openKey) {
     if (t.id === 'bmdate') {
       const iso = parseBmDate(t.value, day.date);
       const hint = box.querySelector('#bmhint');
-      if (iso) p.bm = { date: iso, dos: day.date, how: p.bm?.how || settings.bmHow || 'both' };
+      if (iso) p.bm = { date: iso, dos: day.date, how: p.bm?.how || settings.bmHow || 'both', kind: p.bm?.kind };
       else if (!t.value.trim()) delete p.bm;
       if (hint) hint.textContent = iso ? bmSentence(p) : t.value.trim() ? 'Type the date as 11/15 or 11/15/26. It cannot be after the date of service.' : '';
       if (!iso && t.value.trim()) return;
@@ -714,8 +714,10 @@ function mountDetails(p, openKey) {
       await save();
     } else if (b.dataset.bm) { // APP-11-20: Yesterday / Today, counted from the date of service
       const date = b.dataset.bm === 'today' ? day.date : addDays(day.date, -1);
-      if (p.bm?.date === date) delete p.bm; else p.bm = { date, dos: day.date, how: p.bm?.how || settings.bmHow || 'both' };
+      if (p.bm?.date === date) delete p.bm; else p.bm = { date, dos: day.date, how: p.bm?.how || settings.bmHow || 'both', kind: p.bm?.kind };
       await save();
+    } else if (b.dataset.bmkind) { // APP-11-22: firm / loose / diarrhea, once a day is picked
+      if (p.bm) { p.bm.kind = p.bm.kind === b.dataset.bmkind ? undefined : b.dataset.bmkind; await save(); }
     } else if (b.dataset.bmhow) {
       settings.bmHow = b.dataset.bmhow;
       await saveSettings(settings);
@@ -750,6 +752,8 @@ function bmPanel(p) {
       <button class="dpreset ${b?.date === day.date ? 'on' : ''}" data-bm="today">Today</button>
       <input id="bmdate" value="${esc(typed)}" placeholder="or date: 11/15" inputmode="text" autocomplete="off" style="flex:1;min-width:9rem">
     </div>
+    <div class="small muted">Stool (optional${b ? '' : '; pick the day first'})</div>
+    <div class="row">${BM_KINDS.map((k) => `<button class="dpreset ${b?.kind === k ? 'on' : ''}" data-bmkind="${k}" ${b ? '' : 'disabled'}>${k[0].toUpperCase()}${k.slice(1)}</button>`).join('')}</div>
     <div class="small muted">How it is written</div>
     <div class="row">${BM_HOW.map(([k, label]) => `<button class="dpreset ${how === k ? 'on' : ''}" data-bmhow="${k}">${esc(label)}</button>`).join('')}</div>
     <div class="small" id="bmhint">${esc(bmSentence(p))}</div>`;
@@ -947,13 +951,20 @@ function syncPainSentence(p) {
 }
 
 // Optional area (side + site) and type buttons, shared by the pain screen and the Pain detail.
+// APP-11-22: the back entry among the pain sites ("back", "lower back", "mid back", "upper back"), or null
+function backSite(p) {
+  return (p.painSite || []).find((x) => /(?:^| )back$/.test(x)) ?? null;
+}
+
 function painExtras(p) {
   const grid = (extra = '') => `style="grid-template-columns:repeat(auto-fill,minmax(96px,1fr));${extra}"`;
   const chips = (act, list, on) => list.map((x) => `<button data-act="${act}" data-v="${esc(x)}" class="${on(x) ? 'on' : ''}">${esc(x)}</button>`).join('');
   return `<div class="pain-extras">
     <div class="small muted" style="margin:14px 0 6px">Area (optional)</div>
     <div class="dkeys" ${grid()}>${chips('pain-side', PAIN_SIDES, (x) => p.painSide === x)}</div>
-    <div class="dkeys" ${grid('margin-top:6px')}>${chips('pain-site', PAIN_SITES, (x) => (p.painSite || []).includes(x))}</div>
+    <div class="dkeys" ${grid('margin-top:6px')}>${chips('pain-site', PAIN_SITES, (x) => (x === 'back' ? backSite(p) != null : (p.painSite || []).includes(x)))}</div>
+    ${backSite(p) != null ? `<div class="small muted" style="margin:8px 0 6px">Which part of the back?</div>
+    <div class="dkeys" ${grid()}>${chips('pain-back', BACK_PARTS, (x) => backSite(p) === `${x} back`)}</div>` : ''}
     <div class="small muted" style="margin:12px 0 6px">Type (optional)</div>
     <div class="dkeys" ${grid()}>${chips('pain-type', PAIN_TYPES, (x) => (p.painType || []).includes(x))}</div>
   </div>`;
@@ -1549,10 +1560,15 @@ app.addEventListener('click', async (e) => {
     case 'loc': p.location = +b.dataset.i; await saveDay(day); render(); break;
     case 'pain': p.pain = b.dataset.v === '' ? null : +b.dataset.v; delete view.painPick; await saveDay(day); render(); break;
     case 'pain-pick': view.painPick = +b.dataset.v; render(); break;
-    case 'pain-side': case 'pain-site': case 'pain-type': {
+    case 'pain-side': case 'pain-site': case 'pain-type': case 'pain-back': {
       const v = b.dataset.v;
       if (act === 'pain-side') p.painSide = p.painSide === v ? '' : v;
-      else {
+      else if (act === 'pain-back' || (act === 'pain-site' && v === 'back')) { // APP-11-22
+        const cur = backSite(p);
+        const rest = (p.painSite || []).filter((x) => x !== cur);
+        if (act === 'pain-site') p.painSite = cur != null ? rest : [...rest, 'back']; // tap "back": on, or off with its part
+        else p.painSite = [...rest, cur === `${v} back` ? 'back' : `${v} back`]; // tap a part: set it, or back to plain "back"
+      } else {
         const field = act === 'pain-site' ? 'painSite' : 'painType';
         const list = p[field] || [];
         p[field] = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];

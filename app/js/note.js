@@ -124,12 +124,13 @@ export function fullNote(p) {
     const next = text ? insertAfter(text, re, add) : null;
     if (next == null) tail.push(add); else text = next;
   };
-  place(['overnight', 'nursing', 'new'], /^[^.!?]*[.!?]/);
+  // APP-11-22: the antibiotic sentence comes right after where the patient was assessed, before the other details
+  place(['abx', 'overnight', 'nursing', 'new'], /^[^.!?]*[.!?]/);
   // APP-11-11: also the varied wordings ("Appetite fair, ...", "Appetite is fair, ...", "Pt continues with therapy.")
   place(['meal'], /\b(?:(?:good|fair|poor)\s+appetite|appetite\s+(?:is\s+)?(?:good|fair|poor))[^.]*\./i);
   place(['therapy'], /\b(?:continues to work with|continues with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
   place(['bm'], /\bconstipation[^.]*\./i); // APP-11-20: the BM sentence follows the constipation sentence
-  for (const k of ['pain', 'abx', 'said']) if (d[k]) tail.push(d[k]);
+  for (const k of ['pain', 'labs', 'said']) if (d[k]) tail.push(d[k]); // APP-11-22: labs sentence at the end
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
 }
@@ -158,9 +159,10 @@ export function bmSentence(p) {
   const diff = dayNo(b.dos) - dayNo(b.date);
   const word = diff === 0 ? 'today' : diff === 1 ? 'yesterday' : '';
   const how = b.how || 'both';
-  if (!word || how === 'date') return `Last BM ${mdy(b.date)}.`;
-  if (how === 'word') return `Last BM ${word}.`;
-  return `Last BM ${word} (${mdy(b.date)}).`;
+  const kind = b.kind ? `, ${b.kind}` : ''; // APP-11-22: firm, loose or diarrhea
+  if (!word || how === 'date') return `Last BM ${mdy(b.date)}${kind}.`;
+  if (how === 'word') return `Last BM ${word}${kind}.`;
+  return `Last BM ${word} (${mdy(b.date)})${kind}.`;
 }
 
 /**

@@ -159,6 +159,8 @@ export const DETAILS = [
     quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
   { key: 'abx', label: 'ABX' },
   { key: 'bm', label: 'BM' }, // APP-11-20: when the last BM was (see note.js bmSentence)
+  // APP-11-22: "Labs reviewed." in the note tells the Note Updater (version 84) to put the day's labs in the plan
+  { key: 'labs', label: 'Labs', prefix: '', presets: ['Labs reviewed', 'Labs reviewed with pt'] },
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
   { key: 'exam', label: 'Exam' }, // APP-11-20: goes out as "Exam: Resp: ..." lines under the patient, not in the note text
 ];
@@ -179,10 +181,14 @@ export const EXAM_SYSTEMS = [
 ];
 // How the BM sentence is written: "Last BM yesterday (11/18/26)." / "Last BM yesterday." / "Last BM 11/18/26."
 export const BM_HOW = [['both', 'Both'], ['word', 'Word only'], ['date', 'Date only']];
+// APP-11-22: what the BM was like (optional): "Last BM yesterday (11/21/26), loose."
+export const BM_KINDS = ['firm', 'loose', 'diarrhea'];
+// APP-11-22: "back" asks which part. The site is written "lower back", "mid back" or "upper back" ("back" if none picked).
+export const BACK_PARTS = ['lower', 'mid', 'upper'];
 // ===== APP-11-20  END =====
 
 // Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
 // "Pain 6/10 to right knee and hip, aching and sharp."
 export const PAIN_SIDES = ['left', 'right', 'bilateral'];
-export const PAIN_SITES = ['lower back', 'knee', 'hip', 'shoulder', 'neck', 'leg', 'foot', 'abdomen', 'incision site', 'fingers', 'hands', 'generalized'];
+export const PAIN_SITES = ['back', 'knee', 'hip', 'shoulder', 'neck', 'leg', 'foot', 'abdomen', 'incision site', 'fingers', 'hands', 'generalized'];
 export const PAIN_TYPES = ['aching', 'sharp', 'dull', 'burning', 'throbbing', 'stabbing', 'shooting', 'cramping', 'tender', 'numbness', 'tingling'];
