@@ -163,6 +163,10 @@ export const DETAILS = [
   { key: 'labs', label: 'Labs', prefix: '', presets: ['Labs reviewed', 'Labs reviewed with pt'] },
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
   { key: 'exam', label: 'Exam' }, // APP-11-20: goes out as "Exam: Resp: ..." lines under the patient, not in the note text
+  // APP-11-22-CHART: the patient's diagnoses and current medications, pulled from the computer (Note Updater version 85).
+  // A tapped one goes out as a "Dx: ..." / "Med: ..." line under the patient, not in the note text.
+  { key: 'dx', label: 'Dx' },
+  { key: 'meds', label: 'Meds' },
 ];
 
 // ===== APP-11-20  START: exam section and BM button =====

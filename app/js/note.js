@@ -80,6 +80,7 @@ function detailMap(p) {
     }
     if (d.key === 'bm') { const s = bmSentence(p); if (s) out.bm = s; continue; } // APP-11-20
     if (d.key === 'exam') continue; // APP-11-20: exam findings go out as their own lines (examLines), never in the note text
+    if (d.key === 'dx' || d.key === 'meds') continue; // APP-11-22-CHART: tapped items go out as their own lines (tapLines)
     let v = String(f[d.key] ?? '').trim();
     if (!v) continue;
     const num = numberValue(v, d.unit);
@@ -202,6 +203,28 @@ const VITALS_TAIL_RE = new RegExp(`(Vital signs:[^\\n]*?)\\b(${VITALS_TAILS.map(
  * A wording that is in `avoid` (the last note) is not picked while another is available.
  * `rnd` returns a number from 0 up to 1 (Math.random); tests pass their own.
  */
+// ===== APP-11-22-CHART  START: diagnoses and medications tapped from the chart =====
+/**
+ * One line per tapped item, in the order tapped: "Dx: Hypertension", "Med: Apixaban Oral Tablet 5 MG".
+ * Note Updater (version 85) writes them under the therapy text of the day's note as
+ * "11/22: Diagnoses addressed: ..." and "11/22: Medications reviewed: ...".
+ */
+export function tapLines(p) {
+  const clean = (list) => (Array.isArray(list) ? list : []).map((x) => String(x ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  return [...clean(p.tapDx).map((x) => `Dx: ${x}`), ...clean(p.tapMeds).map((x) => `Med: ${x}`)];
+}
+
+/** The chart entry for a patient: by MRN; by exact name only for an entry that has no MRN. */
+export function chartEntry(chart, p) {
+  const list = chart?.patients;
+  if (!Array.isArray(list)) return null;
+  const mrn = String(p.mrn ?? '').trim();
+  const name = `${String(p.last).trim()}, ${String(p.first).trim()}`.toUpperCase();
+  return (mrn && list.find((x) => String(x.mrn ?? '').trim() === mrn))
+    || list.find((x) => !String(x.mrn ?? '').trim() && String(x.name ?? '').trim().toUpperCase() === name) || null;
+}
+// ===== APP-11-22-CHART  END =====
+
 export function varyWording(text, avoid = '', rnd = Math.random) {
   let out = String(text);
   const prev = String(avoid || '');
@@ -332,7 +355,8 @@ export function wordDiff(before, after) {
 export function noteHash(p) {
   // Notes without details hash as before, so earlier sends don't all look changed.
   const ex = examLines(p); // APP-11-20: a changed exam line counts as a change; notes without one hash as before
-  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}${ex.length ? `|${ex.join('|')}` : ''}`;
+  const tap = tapLines(p); // APP-11-22-CHART: a changed tapped line counts as a change; notes without one hash as before
+  const s = `${p.mrn}|${detailSentences(p).length ? fullNote(p) : p.text || ''}${ex.length ? `|${ex.join('|')}` : ''}${tap.length ? `|${tap.join('|')}` : ''}`;
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h.toString(36);
@@ -411,6 +435,7 @@ export function summaryLines(day) {
     const name = `${String(p.last).trim().toUpperCase()}, ${String(p.first).trim().toUpperCase()}`;
     lines.push(`${name} (${p.mrn}): ${text || 'New pt'}`);
     lines.push(...examLines(p)); // APP-11-20: read by Note Updater version 82 and later
+    lines.push(...tapLines(p)); // APP-11-22-CHART: read by Note Updater version 85 and later
   }
   return lines;
 }

@@ -77,6 +77,16 @@ export function saveAbx(abx) {
   return tx('kv', 'readwrite', (s) => s.put(abx, 'abx'));
 }
 
+// APP-11-22-CHART: each building's chart (diagnoses and medications) as last pulled from the computer:
+// { [building id]: { chart, modified, at } }. Kept apart from days; replaced whole on every pull.
+export async function getCharts() {
+  return (await tx('kv', 'readonly', (s) => s.get('charts'))) || {};
+}
+
+export function saveCharts(charts) {
+  return tx('kv', 'readwrite', (s) => s.put(charts, 'charts'));
+}
+
 /** Delete visits that were sent and are older than the retention window. */
 export async function purgeOld(retentionDays, keep = () => false) {
   if (!retentionDays) return;

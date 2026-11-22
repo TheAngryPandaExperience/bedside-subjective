@@ -2,8 +2,8 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines } from './note.js';
-import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll } from './store.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, tapLines, chartEntry } from './note.js';
+import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
 import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS } from './defaults.js';
@@ -11,7 +11,9 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // Bump with every release so it's easy to confirm a phone has the latest copy.
 // 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
 // and safety for notes that were not sent. Every changed place is marked APP-11-11.
-const APP_VERSION = 17;
+// 18 (11/22/2026) = APP-11-22-CHART: Dx and Meds buttons. The patient's diagnoses and medications are pulled from the
+// computer (Note Updater version 85 writes them); a tapped one is sent as a "Dx:" / "Med:" line under the patient.
+const APP_VERSION = 18;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -70,6 +72,7 @@ async function switchBuilding(id) {
   await saveSettings(settings);
   day = await loadDay(day.date, id);
   focusNext = true;
+  pullChart(id); // APP-11-22-CHART
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -136,7 +139,9 @@ async function boot() {
   try { date = sessionStorage.getItem('date') || date; } catch { /* private mode */ }
   if (settings.buildings.length && !settings.buildings.includes(settings.currentBuilding)) settings.currentBuilding = settings.buildings[0];
   day = await loadDay(date, settings.currentBuilding);
+  charts = await getCharts().catch(() => ({})); // APP-11-22-CHART
   render();
+  pullChart(); // APP-11-22-CHART: not waited for; the buttons use the chart already on the phone until it arrives
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
@@ -510,9 +515,22 @@ function renderPatient() {
       <button class="ghost" data-act="back">‹ List</button>
       <div class="grow"><h1 class="mono" style="font-size:1rem">${esc(patientLabel(p, view.i))}</h1></div>
       <span id="saved" class="pill p-good">${p.text ? 'Saved' : ''}</span>
+      <button class="ghost small" data-act="edit-pt">Edit name</button>
       ${settings.buildings.length > 1 ? `<button class="bchip on small" data-act="pick-building" aria-haspopup="true">${esc(bname(day.building))} ▾</button>` : ''}
     </div>
-    <div id="bpicker" class="bpicker" hidden></div>`;
+    <div id="bpicker" class="bpicker" hidden></div>
+    <div id="edit-pt-form" class="card" style="display:grid;gap:8px;margin-bottom:14px" hidden>
+      <div class="small muted">Correct this patient's name or MRN. The note is kept.</div>
+      <div class="row">
+        <input id="ep-last" value="${esc(p.last)}" placeholder="Last name" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">
+        <input id="ep-first" value="${esc(p.first)}" placeholder="First name" autocomplete="off" autocapitalize="words" style="flex:1;min-width:0">
+      </div>
+      <div class="row"><input id="ep-mrn" value="${esc(p.mrn)}" placeholder="MRN" autocomplete="off" inputmode="numeric" style="flex:1;min-width:0"></div>
+      <div id="ep-msg" class="small" style="color:var(--bad)"></div>
+      <div class="row"><span class="grow"></span>
+        <button class="ghost" data-act="edit-pt-cancel">Cancel</button>
+        <button class="primary" data-act="edit-pt-save">Save name</button></div>
+    </div>`; // APP-11-22: Edit name
 
   const last = view.last;
   if (!p.text && p.location == null) {
@@ -619,6 +637,7 @@ function mountDetails(p, openKey) {
   let open = openKey;
   const filled = (d) => (d.key === 'pain' ? p.pain != null : d.key === 'abx' ? activeAbx(p.mrn, day.date).length > 0
     : d.key === 'bm' ? !!p.bm?.date : d.key === 'exam' ? examLines(p).length > 0 // APP-11-20
+      : d.key === 'dx' ? (p.tapDx || []).length > 0 : d.key === 'meds' ? (p.tapMeds || []).length > 0 // APP-11-22-CHART
       : String(p.fields[d.key] ?? '').trim() !== '');
   const filledAbx = () => activeAbx(p.mrn, day.date).length;
   const shown = (d) => {
@@ -626,6 +645,8 @@ function mountDetails(p, openKey) {
     if (d.key === 'abx') return String(filledAbx() || '');
     if (d.key === 'bm') return bmSentence(p).replace(/^Last BM |\.$/g, ''); // APP-11-20
     if (d.key === 'exam') return String(examLines(p).length || '');
+    if (d.key === 'dx') return String((p.tapDx || []).length || ''); // APP-11-22-CHART
+    if (d.key === 'meds') return String((p.tapMeds || []).length || '');
     const v = String(p.fields[d.key] ?? '');
     return d.unit === '%' && /\d$/.test(v) ? `${v}%` : v;
   };
@@ -633,7 +654,7 @@ function mountDetails(p, openKey) {
   const preview = () => {
     if (!box.isConnected) return;
     // Show the whole note as it will be sent, with the details in their places.
-    const ex = examLines(p); // APP-11-20: the exam lines are shown under the note, as they will be sent
+    const ex = [...examLines(p), ...tapLines(p)]; // APP-11-20, APP-11-22-CHART: these lines are shown under the note, as they will be sent
     if (!detailSentences(p).length && !ex.length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
     const ta = document.getElementById('note');
     const shown = ta ? { ...p, text: ta.value } : p;
@@ -651,6 +672,7 @@ function mountDetails(p, openKey) {
     if (d.key === 'abx') return `<div class="dpanel">${abxPanel(p)}${panelNav(next, false)}</div>`;
     if (d.key === 'bm') return `<div class="dpanel">${bmPanel(p)}${panelNav(next)}</div>`; // APP-11-20
     if (d.key === 'exam') return `<div class="dpanel">${examPanel(p)}${panelNav(next)}</div>`;
+    if (d.key === 'dx' || d.key === 'meds') return `<div class="dpanel">${chartPanel(p, d.key)}${panelNav(next)}</div>`; // APP-11-22-CHART
     if (d.key === 'pain') {
       return `<div class="dpanel"><div class="dkeys">
         ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => `<button data-dv="${k}" class="${p.pain === k ? 'on' : ''}">${k}</button>`).join('')}
@@ -703,13 +725,19 @@ function mountDetails(p, openKey) {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.abx) { await abxAction(p, b); if (!box.isConnected) return; await save(); }
-    else if (b.dataset.dkey) { open = open === b.dataset.dkey ? null : b.dataset.dkey; abxMode = null; }
+    else if (b.dataset.dkey) {
+      open = open === b.dataset.dkey ? null : b.dataset.dkey; abxMode = null;
+      // APP-11-22-CHART: opening Dx or Meds asks the computer again when the chart on the phone is over 10 minutes old
+      if ((open === 'dx' || open === 'meds') && Date.now() - (charts[day.building]?.at || 0) > 600000) pullChart();
+    }
     else if (b.dataset.dnext) open = b.dataset.dnext;
     else if ('dclose' in b.dataset) open = null;
     else if ('dclear' in b.dataset) {
       if (open === 'pain') setPain(p, null);
       else if (open === 'bm') delete p.bm; // APP-11-20
       else if (open === 'exam') delete p.exam;
+      else if (open === 'dx') delete p.tapDx; // APP-11-22-CHART
+      else if (open === 'meds') delete p.tapMeds;
       else delete p.fields[open];
       await save();
     } else if (b.dataset.bm) { // APP-11-20: Yesterday / Today, counted from the date of service
@@ -722,6 +750,17 @@ function mountDetails(p, openKey) {
       settings.bmHow = b.dataset.bmhow;
       await saveSettings(settings);
       if (p.bm) { p.bm.how = b.dataset.bmhow; await save(); }
+    } else if (b.dataset.tap) { // APP-11-22-CHART: tap a diagnosis or a medication to add it, tap it again to take it off
+      const k = b.dataset.tap === 'dx' ? 'tapDx' : 'tapMeds';
+      const list = p[k] || [];
+      p[k] = list.includes(b.dataset.v) ? list.filter((x) => x !== b.dataset.v) : [...list, b.dataset.v];
+      if (!p[k].length) delete p[k];
+      await save();
+    } else if (b.dataset.chart === 'refresh') {
+      b.disabled = true;
+      b.textContent = 'Asking the computer…';
+      await pullChart(day.building, { loud: true });
+      if (!box.isConnected) return;
     } else if (b.dataset.exsys) { // APP-11-20: tap an exam finding to use it, tap it again to clear it
       p.exam ??= {};
       if (p.exam[b.dataset.exsys] === b.dataset.exv) delete p.exam[b.dataset.exsys]; else p.exam[b.dataset.exsys] = b.dataset.exv;
@@ -737,6 +776,7 @@ function mountDetails(p, openKey) {
   preview();
   refreshPreview = preview;
   redrawDetails = () => { if (box.isConnected) { draw(); preview(); } };
+  chartRedraw = () => { if (box.isConnected && (open === 'dx' || open === 'meds')) draw(); }; // APP-11-22-CHART: never redraws a panel being typed in
 }
 
 // ===== APP-11-20  START: BM and Exam panels =====
@@ -770,6 +810,75 @@ function examPanel(p) {
     </div>`).join('')}`;
 }
 // ===== APP-11-20  END =====
+
+// ===== APP-11-22-CHART  START: Dx and Meds buttons =====
+// Note Updater (version 85) writes each building's chart on the computer: every current patient's diagnoses (from
+// the newest note) and medications (from the newest Medications file, else the note). The receiver hands it over
+// with the token. It is kept on this phone so the buttons work with no signal, and each list shows its date.
+let charts = {}; // building id -> { chart, modified, at }
+const chartNote = {}; // building id -> why the last pull brought nothing, in words
+let chartBusy = false;
+let chartRedraw = () => {};
+const chartTime = (ms) => new Date(ms).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+async function pullChart(id = day?.building, { loud = false } = {}) {
+  if (!id || chartBusy) return false;
+  if (!settings.receiverUrl && !/ts\.net$|^127\.|^localhost$/.test(location.hostname)) {
+    chartNote[id] = 'No computer address is set in Settings.';
+    if (loud) toast(chartNote[id], 4000);
+    return false;
+  }
+  chartBusy = true;
+  let ok = false;
+  try {
+    const res = await fetch(`${receiverBase()}api/chart?building=${encodeURIComponent(bname(id))}`, { headers: { 'X-Token': settings.receiverToken || '' }, cache: 'no-store' });
+    if (res.status === 401) throw new Error('The receiver rejected the token. Check Settings.');
+    if (res.status === 404) throw new Error('The receiver on the computer is an older one with no chart. Update the receiver.');
+    if (!res.ok) throw new Error(`Receiver error ${res.status}`);
+    const info = await res.json();
+    if (info.found && Array.isArray(info.chart?.patients)) {
+      charts[id] = { chart: info.chart, modified: info.modified || '', at: Date.now() };
+      delete chartNote[id];
+      await saveCharts(charts);
+      ok = true;
+    } else chartNote[id] = info.why || 'The computer has no chart for this building.';
+  } catch (err) {
+    chartNote[id] = err instanceof TypeError ? 'The computer could not be reached.' : err.message;
+  } finally {
+    chartBusy = false;
+  }
+  if (loud) toast(ok ? `Chart updated: ${charts[id].chart.patients.length} patients` : chartNote[id], 4000);
+  if (id === day?.building) chartRedraw();
+  return ok;
+}
+
+function chartPanel(p, kind) {
+  const c = charts[day.building];
+  const e = chartEntry(c?.chart, p);
+  const what = kind === 'dx' ? 'diagnoses' : 'medications';
+  const tapped = (kind === 'dx' ? p.tapDx : p.tapMeds) || [];
+  const items = !e ? [] : kind === 'dx'
+    ? (e.dx || []).map((x) => ({ v: String(x), more: '' }))
+    : (e.meds || []).map((m) => ({ v: String(m.name), more: String(m.text || '').startsWith(m.name) ? String(m.text).slice(String(m.name).length).replace(/^\s*[–—-]\s*/, '') : '' }));
+  const extra = tapped.filter((t) => !items.some((i) => i.v === t));
+  const btn = (i) => `<button class="dpreset ${tapped.includes(i.v) ? 'on' : ''}" data-tap="${kind}" data-v="${esc(i.v)}" style="width:100%">
+      <b>${esc(i.v)}</b>${i.more ? `<div class="small" style="font-weight:400;opacity:.85">${esc(i.more)}</div>` : ''}</button>`;
+  const note = chartNote[day.building];
+  let head;
+  if (!c) head = `<div class="small">No chart from the computer on this phone yet.${note ? ` ${esc(note)}` : ''}</div>`;
+  else if (!e) head = `<div class="small">${esc(p.last)}, ${esc(p.first)} (${esc(p.mrn)}) is not in the chart made ${esc(c.chart.made || c.modified)}. A patient is added after Note Updater has made a note for them.</div>`;
+  else {
+    head = `<div class="small"><b>${what[0].toUpperCase()}${what.slice(1)} from the ${esc(kind === 'dx' ? e.dx_from : e.meds_from)}</b></div>
+      ${items.length ? `<div class="small muted">Tap one to add it to today's note, under the therapy section. Tap it again to take it off.</div>`
+    : `<div class="small">No ${what} were found there.</div>`}`;
+  }
+  return `${head}
+    ${items.length ? `<div style="display:grid;gap:6px;max-height:48vh;overflow:auto">${items.map(btn).join('')}</div>` : ''}
+    ${extra.length ? `<div class="small muted">Tapped earlier, not in this chart:</div><div style="display:grid;gap:6px">${extra.map((v) => btn({ v, more: '' })).join('')}</div>` : ''}
+    <div class="row"><span class="small muted grow">${c ? `Chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}` : ''}${c && note ? ` · last try: ${esc(note)}` : ''}</span>
+      <button class="ghost" data-chart="refresh">Refresh</button></div>`;
+}
+// ===== APP-11-22-CHART  END =====
 
 // ---------- antibiotics (the ABX detail) ----------
 
@@ -1116,6 +1225,7 @@ async function sendDay({ overwrite = false, quiet = false, allowBlanks = false }
     await saveDay(day);
     if (!info.renamed?.length) toast(`Sent ${info.file || filename} (send #${send.n})`);
     render();
+    pullChart(); // APP-11-22-CHART
   } catch (err) {
     // APP-11-11: remember that this day still has to be sent.
     // `answered` = the computer was reached and said no (file open in Word, drive missing, wrong token): that is not
@@ -1681,6 +1791,35 @@ app.addEventListener('click', async (e) => {
     }
     case 'rollover': go({ name: 'rollover' }); break;
     case 'ro-add': await addRollover(); break;
+    // APP-11-22: correct a patient's name or MRN after the visit was started
+    case 'edit-pt': {
+      const f = app.querySelector('#edit-pt-form');
+      f.hidden = !f.hidden;
+      if (!f.hidden) app.querySelector('#ep-last').focus();
+      break;
+    }
+    case 'edit-pt-cancel': app.querySelector('#edit-pt-form').hidden = true; break;
+    case 'edit-pt-save': {
+      const val = (id) => app.querySelector(id).value.trim();
+      const next = { last: val('#ep-last'), first: val('#ep-first'), mrn: val('#ep-mrn') };
+      const msg = app.querySelector('#ep-msg');
+      if (!next.last || !next.mrn) { msg.textContent = 'Last name and MRN are needed.'; break; }
+      const dupe = day.patients.findIndex((x) => x !== p && x.mrn === next.mrn);
+      if (dupe >= 0) { msg.textContent = `MRN ${next.mrn} is already on the list as #${dupe + 1}.`; break; }
+      if (document.getElementById('note')) await flushNote();
+      const oldMrn = p.mrn;
+      Object.assign(p, next);
+      p.updatedAt = Date.now();
+      if (oldMrn !== next.mrn && abx[oldMrn]?.length) { // the antibiotic courses follow the patient to the corrected MRN
+        abx[next.mrn] = [...(abx[next.mrn] || []), ...abx[oldMrn]];
+        delete abx[oldMrn];
+        await saveAbx(abx);
+      }
+      await saveDay(day);
+      toast(`Saved: ${next.last}, ${next.first} (${next.mrn})`);
+      render();
+      break;
+    }
     case 'add-pt':
       app.querySelector('#add-pt-form').hidden = false;
       app.querySelector('#ap-last').focus();
