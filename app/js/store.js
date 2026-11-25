@@ -87,6 +87,16 @@ export function saveCharts(charts) {
   return tx('kv', 'readwrite', (s) => s.put(charts, 'charts'));
 }
 
+// APP-11-24: the time clock. { "<date>|<building id>": [{ in: "HH:MM", out: "HH:MM" or "" }] }.
+// Kept apart from the days so a day cleared after it was sent does not take its times with it.
+export async function getClock() {
+  return (await tx('kv', 'readonly', (s) => s.get('timeclock'))) || {};
+}
+
+export function saveClock(clock) {
+  return tx('kv', 'readwrite', (s) => s.put(clock, 'timeclock'));
+}
+
 /** Delete visits that were sent and are older than the retention window. */
 export async function purgeOld(retentionDays, keep = () => false) {
   if (!retentionDays) return;
@@ -103,7 +113,7 @@ export async function purgeOld(retentionDays, keep = () => false) {
 /** Everything on this phone as one object: days, antibiotic courses and settings (never the receiver token). */
 export async function exportAll() {
   const { receiverToken, ...settings } = await getSettings();
-  return { app: 'bedside-subjective', backup: 1, made: new Date().toISOString(), days: await listDays(), abx: await getAbx(), settings };
+  return { app: 'bedside-subjective', backup: 1, made: new Date().toISOString(), days: await listDays(), abx: await getAbx(), clock: await getClock(), settings };
 }
 
 /**
@@ -131,7 +141,14 @@ export async function importAll(data) {
     if (mine.length) abx[mrn] = mine;
   }
   if (added) await saveAbx(abx);
-  return { days, skipped, abx: added };
+  // APP-11-24: clock times in the backup are added only for a day and building that has none on this phone.
+  const clock = await getClock();
+  let times = 0;
+  for (const [key, segs] of Object.entries(data.clock || {})) {
+    if (Array.isArray(segs) && segs.length && !(clock[key] || []).length) { clock[key] = segs; times++; }
+  }
+  if (times) await saveClock(clock);
+  return { days, skipped, abx: added, times };
 }
 
 // ===== APP-11-11  END =====

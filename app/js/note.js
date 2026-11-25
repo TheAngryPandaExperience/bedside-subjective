@@ -377,6 +377,37 @@ export function removedSinceSend(day) {
   return Object.keys(last.hashes).filter((mrn) => !day.patients.some((p) => p.mrn === mrn)).map((mrn) => names[mrn] || mrn);
 }
 
+// ===== APP-11-24  START: time clock arithmetic =====
+/** Minutes between two "HH:MM" clock times on the same day; null when either is missing, malformed, or out is before in. */
+export function clockMinutes(tin, tout) {
+  const m = (t) => { const x = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return x && +x[1] < 24 && +x[2] < 60 ? +x[1] * 60 + +x[2] : null; };
+  const a = m(tin);
+  const b = m(tout);
+  return a == null || b == null || b < a ? null : b - a;
+}
+
+/** "2 h 05 min" / "45 min". */
+export function clockSpan(mins) {
+  if (mins == null) return '';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
+}
+
+/** Total minutes of the finished segments of one day at one building (open or invalid segments are not counted). */
+export function clockTotal(segs) {
+  return (segs || []).reduce((sum, s) => sum + (clockMinutes(s.in, s.out) ?? 0), 0);
+}
+
+/** "7:42 AM" from "07:42". */
+export function clock12(t) {
+  const x = /^(\d{1,2}):(\d{2})$/.exec(t || '');
+  if (!x) return '';
+  const h = +x[1];
+  return `${h % 12 || 12}:${x[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+// ===== APP-11-24  END =====
+
 export function formatDate(iso) {
   const [y, m, d] = iso.split('-');
   return `${m}/${d}/${y}`;

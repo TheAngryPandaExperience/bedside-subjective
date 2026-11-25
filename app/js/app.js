@@ -2,8 +2,8 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, tapLines, chartEntry } from './note.js';
-import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts } from './store.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
+import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getClock, saveClock } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
 import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS } from './defaults.js';
@@ -13,7 +13,10 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // and safety for notes that were not sent. Every changed place is marked APP-11-11.
 // 18 (11/22/2026) = APP-11-22-CHART: Dx and Meds buttons. The patient's diagnoses and medications are pulled from the
 // computer (Note Updater version 85 writes them); a tapped one is sent as a "Dx:" / "Med:" line under the patient.
-const APP_VERSION = 18;
+// 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
+// more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
+// never part of the daily summary that goes to the notes.
+const APP_VERSION = 19;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -140,6 +143,7 @@ async function boot() {
   if (settings.buildings.length && !settings.buildings.includes(settings.currentBuilding)) settings.currentBuilding = settings.buildings[0];
   day = await loadDay(date, settings.currentBuilding);
   charts = await getCharts().catch(() => ({})); // APP-11-22-CHART
+  timeclock = await getClock().catch(() => ({})); // APP-11-24
   render();
   pullChart(); // APP-11-22-CHART: not waited for; the buttons use the chart already on the phone until it arrives
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -147,7 +151,7 @@ async function boot() {
 
 function render() {
   document.querySelector('.phrase-bar')?.remove();
-  const screens = { day: renderDay, import: renderImport, patient: renderPatient, settings: renderSettings, log: renderLog, buildings: renderBuildings, rename: renderRename, rollover: renderRollover };
+  const screens = { timelog: renderTimeLog, day: renderDay, import: renderImport, patient: renderPatient, settings: renderSettings, log: renderLog, buildings: renderBuildings, rename: renderRename, rollover: renderRollover };
   screens[view.name]();
   window.scrollTo(0, 0);
   if (view.name === 'day' && focusNext) {
@@ -192,6 +196,7 @@ function renderDay() {
     <div class="row" style="margin-bottom:12px">
       <label class="grow">Date of service<input type="date" id="date" value="${esc(day.date)}"></label>
     </div>
+    <div id="clock">${clockHtml()}</div>
     <div class="row" style="margin-bottom:14px;flex-wrap:wrap">
       <button class="grow" data-act="import" data-kind="roster">Load patients</button>
       <button class="grow" data-act="rollover">Roll over</button>
@@ -239,6 +244,7 @@ function renderDay() {
   });
   updateCounts();
   updateUnsent(); // APP-11-11
+  wireClock(); // APP-11-24
 }
 
 // ===== APP-11-11  START: receipt, not-sent warnings, retry =====
@@ -810,6 +816,97 @@ function examPanel(p) {
     </div>`).join('')}`;
 }
 // ===== APP-11-20  END =====
+
+// ===== APP-11-24  START: time clock =====
+// His request: "a time clock when starting at a facility on a certain day that I can use or edit. Editing is important."
+// One list of in/out times for each building and date. Clock in and Clock out stamp the time now; every time is an
+// ordinary time box that can be changed, a stretch can be added by hand or removed, and a day can hold several
+// stretches (leave and come back). Nothing here goes into the daily summary or a note.
+let timeclock = {}; // "<date>|<building id>" -> [{ in, out }]
+const clockKey = (d = day) => `${d.date}|${d.building || ''}`;
+const nowHM = () => { const n = new Date(); return `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`; };
+
+async function clockChange(fn) {
+  const segs = (timeclock[clockKey()] ||= []);
+  fn(segs);
+  if (!segs.length) delete timeclock[clockKey()];
+  await saveClock(timeclock);
+  const box = app.querySelector('#clock');
+  if (box) { box.innerHTML = clockHtml(); wireClock(); }
+}
+
+function clockHtml() {
+  if (!day.building && settings.buildings.length) return '';
+  const segs = timeclock[clockKey()] || [];
+  const open = segs.find((s) => s.in && !s.out);
+  const total = clockTotal(segs);
+  const bn = bname(day.building);
+  const rows = segs.map((s, i) => {
+    const mins = clockMinutes(s.in, s.out);
+    const bad = s.in && s.out && mins == null;
+    return `<div style="display:grid;gap:4px;border-top:1px solid var(--line, #d8dde6);padding-top:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label style="min-width:0">In<input type="time" data-clock="in" data-i="${i}" value="${esc(s.in)}" style="width:100%;min-width:0;box-sizing:border-box"></label>
+        <label style="min-width:0">Out<input type="time" data-clock="out" data-i="${i}" value="${esc(s.out)}" style="width:100%;min-width:0;box-sizing:border-box"></label>
+      </div>
+      <div class="row">
+        <div class="grow small ${bad ? '' : 'muted'}"${bad ? ' style="color:var(--bad)"' : ''}>${bad ? 'out is before in' : mins != null ? esc(clockSpan(mins)) : s.in ? 'still in' : ''}</div>
+        <button class="ghost small" data-act="clock-del" data-i="${i}" aria-label="Remove this time" style="min-height:40px">Remove</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">
+    <div class="row"><b class="grow">Time${bn ? ` at ${esc(bn)}` : ''}</b>
+      <span class="small muted">${segs.length ? `Total ${esc(clockSpan(total))}${open ? ' + current' : ''}` : 'Not clocked in'}</span></div>
+    ${open ? `<div class="small">Clocked in at <b>${esc(clock12(open.in))}</b>.</div>` : ''}
+    ${rows}
+    <div class="row" style="flex-wrap:wrap">
+      ${open ? '<button class="primary grow" data-act="clock-out">Clock out now</button>'
+    : `<button class="primary grow" data-act="clock-in">${segs.length ? 'Clock in again' : 'Clock in now'}</button>`}
+      <button class="grow" data-act="clock-add">Add a time by hand</button>
+    </div>
+    ${segs.length ? '<div class="small muted">Tap any time to change it. These times stay on the phone; they are not sent with the notes.</div>' : ''}
+  </div>`;
+}
+
+// A time box that was changed: save it as typed (an emptied box clears that time).
+function wireClock() {
+  app.querySelectorAll('#clock input[data-clock]').forEach((el) => el.addEventListener('change', async (e) => {
+    const { clock: field, i } = e.target.dataset;
+    await clockChange((segs) => { if (segs[+i]) segs[+i][field] = e.target.value || ''; });
+  }));
+}
+
+function timeLogRows() {
+  return Object.entries(timeclock)
+    .map(([key, segs]) => { const [date, building] = key.split('|'); return { date, building, segs }; })
+    .filter((r) => r.segs.length)
+    .sort((a, b) => (a.date === b.date ? bname(a.building).localeCompare(bname(b.building)) : a.date < b.date ? 1 : -1));
+}
+
+const segText = (s) => `${clock12(s.in) || '?'} - ${s.out ? clock12(s.out) : 'still in'}`;
+
+function timeLogText() {
+  return ['Date\tBuilding\tIn - Out\tTotal', ...timeLogRows().map((r) => `${formatDate(r.date)}\t${bname(r.building) || '(no building)'}\t${r.segs.map(segText).join('; ')}\t${clockSpan(clockTotal(r.segs))}`)].join('\n');
+}
+
+function renderTimeLog() {
+  const rows = timeLogRows();
+  app.innerHTML = `
+    <div class="top">
+      <button class="ghost" data-act="back">‹ Back</button>
+      <div class="grow"><h1>Time log</h1></div>
+      ${rows.length ? '<button class="primary" data-act="timelog-copy">Copy</button>' : ''}
+    </div>
+    ${rows.length ? `<div class="stack">${rows.map((r) => `
+      <button class="card" data-act="timelog-open" data-date="${esc(r.date)}" data-b="${esc(r.building)}" style="text-align:left;display:grid;gap:2px">
+        <div class="row"><b class="grow">${esc(formatDate(r.date))} · ${esc(bname(r.building) || '(no building)')}</b><span>${esc(clockSpan(clockTotal(r.segs)))}</span></div>
+        <div class="small muted">${esc(r.segs.map(segText).join('; '))}</div>
+      </button>`).join('')}</div>
+      <p class="small muted">Tap a day to open it and change its times. Copy puts the whole log on the clipboard to paste into a spreadsheet.</p>`
+    : '<div class="empty card"><p><b>No times yet.</b></p><p>On the list screen, tap <b>Clock in now</b> when you start at a building.</p></div>'}`;
+}
+// ===== APP-11-24  END =====
 
 // ===== APP-11-22-CHART  START: Dx and Meds buttons =====
 // Note Updater (version 85) writes each building's chart on the computer: every current patient's diagnoses (from
@@ -1489,6 +1586,7 @@ function renderSettings() {
     <div class="stack">
       <div class="row"><div class="grow small muted">Buildings: ${esc(s.buildings.map(bname).join(', ') || 'none yet')}</div><button data-act="manage-buildings">Manage buildings</button></div>
       <label>Your name<input id="s-provider" value="${esc(s.providerName)}"></label>
+      <div class="row"><div class="grow small muted">Time clock: your in and out times for each building and day.</div><button data-act="timelog">Time log</button></div>
 
       <h2>Note template</h2>
       <p class="small muted">{location} is filled by the location button, {pain} by the keypad, {vitals} by loaded vitals (left blank otherwise).</p>
@@ -1876,6 +1974,25 @@ app.addEventListener('click', async (e) => {
       break;
     }
     case 'send': await sendDay(); break;
+    // APP-11-24: time clock
+    case 'clock-in': await clockChange((segs) => segs.push({ in: nowHM(), out: '' })); break;
+    case 'clock-out': await clockChange((segs) => { const open = segs.find((s) => s.in && !s.out); if (open) open.out = nowHM(); }); break;
+    case 'clock-add': await clockChange((segs) => segs.push({ in: '', out: '' })); break;
+    case 'clock-del': await clockChange((segs) => segs.splice(+b.dataset.i, 1)); break;
+    case 'timelog': go({ name: 'timelog' }); break;
+    case 'timelog-open': {
+      const b2 = b.dataset.b;
+      if (b2 && settings.buildings.includes(b2)) { settings.currentBuilding = b2; await saveSettings(settings); }
+      day = await loadDay(b.dataset.date, b2);
+      try { sessionStorage.setItem('date', day.date); } catch { /* ignore */ }
+      history.back(); // back to the list, which now shows that day
+      break;
+    }
+    case 'timelog-copy': {
+      const text = timeLogText();
+      try { await navigator.clipboard.writeText(text); toast('Time log copied'); } catch { downloadText(`Bedside time log ${todayIso()}.txt`, text); toast('Time log saved to Downloads'); }
+      break;
+    }
     // APP-11-11
     case 'send-blanks': history.back(); setTimeout(() => sendDay({ allowBlanks: true }), 50); break;
     case 'receipt-ok': lastReceipt = null; render(); break;
