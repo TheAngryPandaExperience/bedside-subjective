@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
 // more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
 // never part of the daily summary that goes to the notes.
-const APP_VERSION = 25;
+const APP_VERSION = 27;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -145,7 +145,7 @@ async function boot() {
   charts = await getCharts().catch(() => ({})); // APP-11-22-CHART
   timeclock = await getClock().catch(() => ({})); // APP-11-24
   render();
-  pullChart(); // APP-11-22-CHART: not waited for; the buttons use the chart already on the phone until it arrives
+  pullAllCharts(); // APP-11-25H (was the open building only): every building's chart, not waited for; the buttons use what is on the phone until it arrives
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
@@ -197,6 +197,7 @@ function renderDay() {
       <label class="grow">Date of service<input type="date" id="date" value="${esc(day.date)}"></label>
     </div>
     <div id="clock">${clockHtml()}</div>
+    <div id="chartsbox">${chartsHtml()}</div>
     <div class="row" style="margin-bottom:14px;flex-wrap:wrap">
       <button class="grow" data-act="import" data-kind="roster">Load patients</button>
       <button class="grow" data-act="rollover">Roll over</button>
@@ -1197,9 +1198,67 @@ async function pullChart(id = day?.building, { loud = false } = {}) {
   }
   if (loud) toast(ok ? `Chart updated: ${charts[id].chart.patients.length} patients` : chartNote[id], 4000);
   if (id === day?.building) chartRedraw();
+  chartsRedraw(); // APP-11-25H
   return ok;
 }
 
+// ===== APP-11-25H  START: every building's chart at once, and what the phone holds =====
+// His request (11/25/2026): "I think it should pull all and send to each person's chart." One request already brings a
+// whole building; this asks for every building in turn - when the app opens and from "Get all charts" - so the Dx and
+// Meds buttons work all day from the phone's own copy. The list screen shows what the phone holds for each building.
+let chartsAll = null; // while a pull of every building runs: { done, total }
+async function pullAllCharts({ loud = false } = {}) {
+  if (chartsAll || chartBusy || !settings.buildings.length) return;
+  chartsAll = { done: 0, total: settings.buildings.length };
+  chartsRedraw();
+  let got = 0;
+  let stopped = '';
+  try {
+    for (const id of settings.buildings) {
+      const ok = await pullChart(id);
+      chartsAll.done += 1;
+      if (ok) got += 1;
+      else if (/could not be reached|No computer address/.test(chartNote[id] || '')) { stopped = chartNote[id]; break; } // no point asking for the rest
+      chartsRedraw();
+    }
+  } finally {
+    chartsAll = null;
+    chartsRedraw();
+  }
+  if (loud) toast(stopped || `Charts on this phone: ${got} of ${settings.buildings.length} buildings updated`, 5000);
+}
+
+function chartsRedraw() {
+  const box = document.getElementById('chartsbox');
+  if (box) box.innerHTML = chartsHtml();
+}
+
+function chartsHtml() {
+  if (!settings.buildings.length) return '';
+  const shut = !!settings.folded?.charts;
+  const have = settings.buildings.filter((b) => charts[b]?.chart?.patients).length;
+  const dayMs = 86400000;
+  const rows = settings.buildings.map((b) => {
+    const c = charts[b];
+    const note = chartNote[b];
+    if (!c?.chart?.patients) return `<div class="small"><b>${esc(bname(b))}</b>: no chart on this phone${note ? ` - ${esc(note)}` : ''}</div>`;
+    const age = Math.floor((Date.now() - (c.at || 0)) / dayMs);
+    return `<div class="small"><b>${esc(bname(b))}</b>: ${c.chart.patients.length} patients · chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}${age >= 1 ? ` <b>(${age} day${age === 1 ? '' : 's'} ago)</b>` : ''}${note ? `<div class="muted">last try: ${esc(note)}</div>` : ''}</div>`;
+  }).join('');
+  const head = `<div class="row"><button class="ghost grow" data-act="fold" data-k="charts" aria-expanded="${!shut}" style="text-align:left;min-height:40px;padding-left:0"><b>${shut ? '▸' : '▾'} Dx and Meds on this phone</b></button>
+      <span class="small muted">${chartsAll ? `Asking the computer… ${chartsAll.done}/${chartsAll.total}` : `${have} of ${settings.buildings.length} buildings`}</span></div>`;
+  if (shut) return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">${head}</div>`;
+  return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">${head}
+    ${rows}
+    <div class="row"><button class="grow" data-act="charts-all" ${chartsAll ? 'disabled' : ''}>${chartsAll ? 'Asking the computer…' : 'Get all charts'}</button></div>
+    <div class="small muted">Each chart holds every current patient of that building. It is as new as the last Note Updater run for the building.</div>
+  </div>`;
+}
+// ===== APP-11-25H  END =====
+
+// APP-11-25G (11/25/2026): each row of the Dx / Meds list keeps the height of its own text. The list was a grid with a
+// height limit, which squeezed every row to the button's minimum height, so a long diagnosis or a medication's directions
+// ran over the row below it and looked as if it belonged to the next medication.
 function chartPanel(p, kind) {
   const c = charts[day.building];
   const e = chartEntry(c?.chart, p);
@@ -1209,7 +1268,7 @@ function chartPanel(p, kind) {
     ? (e.dx || []).map((x) => ({ v: String(x), more: '' }))
     : (e.meds || []).map((m) => ({ v: String(m.name), more: String(m.text || '').startsWith(m.name) ? String(m.text).slice(String(m.name).length).replace(/^\s*[–—-]\s*/, '') : '' }));
   const extra = tapped.filter((t) => !items.some((i) => i.v === t));
-  const btn = (i) => `<button class="dpreset ${tapped.includes(i.v) ? 'on' : ''}" data-tap="${kind}" data-v="${esc(i.v)}" style="width:100%">
+  const btn = (i) => `<button class="dpreset ${tapped.includes(i.v) ? 'on' : ''}" data-tap="${kind}" data-v="${esc(i.v)}" style="width:100%;flex:0 0 auto;height:auto;white-space:normal;overflow-wrap:anywhere">
       <b>${esc(i.v)}</b>${i.more ? `<div class="small" style="font-weight:400;opacity:.85">${esc(i.more)}</div>` : ''}</button>`;
   const note = chartNote[day.building];
   let head;
@@ -1221,8 +1280,8 @@ function chartPanel(p, kind) {
     : `<div class="small">No ${what} were found there.</div>`}`;
   }
   return `${c && note ? `<div class="small" id="chartsaved" style="border:1px solid var(--line, #d8dde6);border-radius:8px;padding:6px 8px"><b>Using the chart saved on this phone</b> (pulled ${esc(chartTime(c.at))}). ${esc(note)}</div>` : ''}${head}
-    ${items.length ? `<div style="display:grid;gap:6px;max-height:48vh;overflow:auto">${items.map(btn).join('')}</div>` : ''}
-    ${extra.length ? `<div class="small muted">Tapped earlier, not in this chart:</div><div style="display:grid;gap:6px">${extra.map((v) => btn({ v, more: '' })).join('')}</div>` : ''}
+    ${items.length ? `<div id="chartlist" style="display:flex;flex-direction:column;gap:6px;max-height:48vh;overflow:auto">${items.map(btn).join('')}</div>` : ''}
+    ${extra.length ? `<div class="small muted">Tapped earlier, not in this chart:</div><div style="display:flex;flex-direction:column;gap:6px">${extra.map((v) => btn({ v, more: '' })).join('')}</div>` : ''}
     <div class="row"><span class="small muted grow">${c ? `Chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}` : ''}</span>
       <button class="ghost" data-chart="refresh">Refresh</button></div>`;
 }
@@ -2233,8 +2292,10 @@ app.addEventListener('click', async (e) => {
       if (cbox) { cbox.innerHTML = clockHtml(); wireClock(); }
       const ubox = document.getElementById('unsent');
       if (ubox) ubox.innerHTML = unsentHtml();
+      chartsRedraw(); // APP-11-25H
       break;
     }
+    case 'charts-all': await pullAllCharts({ loud: true }); break; // APP-11-25H
     case 'clock-in': await clockChange((segs) => segs.push({ in: nowHM(), out: '' })); break;
     case 'clock-out': await clockChange((segs) => { const open = segs.find((s) => s.in && !s.out); if (open) open.out = nowHM(); }); break;
     case 'clock-add': await clockChange((segs) => segs.push({ in: '', out: '' })); break;
