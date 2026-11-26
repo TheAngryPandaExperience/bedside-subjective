@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
 // more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
 // never part of the daily summary that goes to the notes.
-const APP_VERSION = 24;
+const APP_VERSION = 25;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -1146,6 +1146,29 @@ let chartBusy = false;
 let chartRedraw = () => {};
 const chartTime = (ms) => new Date(ms).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
+// ===== APP-11-25F  START: a chart request that does not give up on the first miss =====
+// A phone on Tailscale often misses the first request after it wakes or changes network. Each try is given 8 seconds;
+// a try that gets no answer is repeated after 1 and then 3 seconds (3 tries). Only this read-only request is repeated.
+const CHART_TRIES = [0, 1000, 3000];
+const CHART_WAIT_MS = 8000;
+async function fetchPatient(url, opts) {
+  let last;
+  for (const pause of CHART_TRIES) {
+    if (pause) await new Promise((r) => setTimeout(r, pause));
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), CHART_WAIT_MS);
+    try {
+      return await fetch(url, { ...opts, signal: ctl.signal });
+    } catch (err) {
+      last = err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new TypeError(last?.name === 'AbortError' ? 'timeout' : String(last?.message || last));
+}
+// ===== APP-11-25F  END =====
+
 async function pullChart(id = day?.building, { loud = false } = {}) {
   if (!id || chartBusy) return false;
   if (!settings.receiverUrl && !/ts\.net$|^127\.|^localhost$/.test(location.hostname)) {
@@ -1156,7 +1179,7 @@ async function pullChart(id = day?.building, { loud = false } = {}) {
   chartBusy = true;
   let ok = false;
   try {
-    const res = await fetch(`${receiverBase()}api/chart?building=${encodeURIComponent(bname(id))}`, { headers: { 'X-Token': settings.receiverToken || '' }, cache: 'no-store' });
+    const res = await fetchPatient(`${receiverBase()}api/chart?building=${encodeURIComponent(bname(id))}`, { headers: { 'X-Token': settings.receiverToken || '' }, cache: 'no-store' }); // APP-11-25F
     if (res.status === 401) throw new Error('The receiver rejected the token. Check Settings.');
     if (res.status === 404) throw new Error('The receiver on the computer is an older one with no chart. Update the receiver.');
     if (!res.ok) throw new Error(`Receiver error ${res.status}`);
@@ -1168,7 +1191,7 @@ async function pullChart(id = day?.building, { loud = false } = {}) {
       ok = true;
     } else chartNote[id] = info.why || 'The computer has no chart for this building.';
   } catch (err) {
-    chartNote[id] = err instanceof TypeError ? 'The computer could not be reached.' : err.message;
+    chartNote[id] = err instanceof TypeError ? `The computer could not be reached after ${CHART_TRIES.length} tries${err.message === 'timeout' ? ' (no answer)' : ''}. Check that Tailscale is on in this phone, and that the computer is awake with the receiver running.` : err.message; // APP-11-25F
   } finally {
     chartBusy = false;
   }
@@ -1197,10 +1220,10 @@ function chartPanel(p, kind) {
       ${items.length ? `<div class="small muted">Tap one to add it to today's note, under the therapy section. Tap it again to take it off.</div>`
     : `<div class="small">No ${what} were found there.</div>`}`;
   }
-  return `${head}
+  return `${c && note ? `<div class="small" id="chartsaved" style="border:1px solid var(--line, #d8dde6);border-radius:8px;padding:6px 8px"><b>Using the chart saved on this phone</b> (pulled ${esc(chartTime(c.at))}). ${esc(note)}</div>` : ''}${head}
     ${items.length ? `<div style="display:grid;gap:6px;max-height:48vh;overflow:auto">${items.map(btn).join('')}</div>` : ''}
     ${extra.length ? `<div class="small muted">Tapped earlier, not in this chart:</div><div style="display:grid;gap:6px">${extra.map((v) => btn({ v, more: '' })).join('')}</div>` : ''}
-    <div class="row"><span class="small muted grow">${c ? `Chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}` : ''}${c && note ? ` · last try: ${esc(note)}` : ''}</span>
+    <div class="row"><span class="small muted grow">${c ? `Chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}` : ''}</span>
       <button class="ghost" data-chart="refresh">Refresh</button></div>`;
 }
 // ===== APP-11-22-CHART  END =====
