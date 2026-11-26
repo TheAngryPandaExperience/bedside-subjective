@@ -140,6 +140,7 @@ export const DEFAULT_SETTINGS = {
   providerName: '',
   varyWording: true, // APP-11-11: routine sentences are worded a little differently each day (Settings turns it off)
   bmHow: 'both', // APP-11-20: how the BM sentence is written; the BM panel changes it
+  carryStanding: true, // APP-11-26D: oxygen set-up, catheter, ostomy and PEG tube are carried to the next day's note as settings to confirm
   folded: {}, // APP-11-25B: { clock: true, unsent: true } = that card on the list screen is folded up
 };
 

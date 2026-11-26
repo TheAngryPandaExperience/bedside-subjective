@@ -1,9 +1,10 @@
 // Offline support: the app shell is cached on install; vendor libraries are cached the first time they load.
 // Patient data lives in IndexedDB, never in this cache. API calls always go to the network.
-const VERSION = 'v27';
+importScripts('js/version.js'); // sets self.BEDSIDE_VERSION - the one place the number lives
+const VERSION = `v${self.BEDSIDE_VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/parsers.js', 'js/note.js', 'js/store.js', 'js/importers.js', 'js/defaults.js', 'js/docx.js',
+  'js/version.js', 'js/app.js', 'js/parsers.js', 'js/note.js', 'js/store.js', 'js/importers.js', 'js/defaults.js', 'js/docx.js',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png',
 ];
 

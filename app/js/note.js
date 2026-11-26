@@ -47,6 +47,54 @@ export function patientLabel(p, i) {
   return `${i + 1}. ${p.last}, ${p.first} (${p.mrn}):`;
 }
 
+// ===== APP-11-26F  START: room in the list, and the order of the list =====
+/** "Pod A 202 - 1" -> { unit: "Pod A", room: "202", bed: "1" }; "Room: 14" -> { unit: "", room: "14", bed: "" }.
+ *  Text that fits neither pattern is kept whole as the room. */
+export function roomParts(room) {
+  const t = String(room ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return { unit: '', room: '', bed: '' };
+  let m = t.match(/^(?:(.*?)\s+)?(\d{1,4}[A-Za-z]?)\s*-\s*([A-Za-z0-9]{1,2})$/);
+  if (m) return { unit: (m[1] || '').replace(/^room:?$/i, '').trim(), room: m[2], bed: m[3] };
+  m = t.match(/^(?:room:?\s*)?(\d{1,4}[A-Za-z]?)$/i);
+  if (m) return { unit: '', room: m[1], bed: '' };
+  m = t.match(/^(.*?)\s+(\d{1,4}[A-Za-z]?)$/);
+  if (m) return { unit: m[1].replace(/^room:?$/i, '').trim(), room: m[2], bed: '' };
+  return { unit: '', room: t.replace(/^room:?\s*/i, ''), bed: '' };
+}
+
+/** "[202-1]" (room and bed), "[14]" (room only), "[ ]" (no room). */
+export function roomTag(p) {
+  const r = roomParts(p?.room);
+  return r.room ? `[${r.room}${r.bed ? `-${r.bed}` : ''}]` : '[ ]';
+}
+
+/** How a patient is shown on the phone: "1. [202-1] Mouse, Mickey (7961):". The file sent to the computer does not
+ *  use this - it keeps "1. Mouse, Mickey (7961):" (patientLabel), which is what the Note Updater reads. */
+export function listLabel(p, i) {
+  return `${i + 1}. ${roomTag(p)} ${p.last}, ${p.first} (${p.mrn}):`;
+}
+
+/** A copy of the list in the chosen order: 'name' (last, first), 'room' (room number, bed) or 'unit' (unit, room, bed).
+ *  Patients with no room come last under 'room' and 'unit'. Anything else returns the list as it is. */
+export function sortPatients(list, by) {
+  const nat = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  const name = (a, b) => nat(a.last, b.last) || nat(a.first, b.first) || nat(a.mrn, b.mrn);
+  const key = (p) => roomParts(p.room);
+  const room = (a, b) => {
+    const x = key(a); const y = key(b);
+    if (!x.room !== !y.room) return x.room ? -1 : 1;
+    return nat(x.room, y.room) || nat(x.bed, y.bed) || name(a, b);
+  };
+  const unit = (a, b) => {
+    const x = key(a); const y = key(b);
+    if (!x.room !== !y.room) return x.room ? -1 : 1;
+    return nat(x.unit, y.unit) || room(a, b);
+  };
+  const cmp = { name, room, unit }[by];
+  return cmp ? [...list].sort(cmp) : [...list];
+}
+// ===== APP-11-26F  END =====
+
 function sentence(s) {
   const t = String(s).trim().replace(/[.\s]+$/, '');
   return t ? `${t[0].toUpperCase()}${t.slice(1)}.` : '';
@@ -687,3 +735,112 @@ export function summaryFilename(day) {
   const stamp = `${m}_${d}_${String(y).slice(-2)}`;
   return day.building ? `${day.building} Daily notes ${stamp}.docx` : `Daily notes ${stamp}.docx`;
 }
+
+// ===== APP-11-26B  START: things in one note that do not fit together =====
+// Report only. Nothing is changed: each pair is shown on the patient's screen and once more before the day is sent,
+// and the note can still be sent as it is.
+const CLASH_GROUPS = [
+  ['breathing', /shortness of breath|\bSOB\b|wheez\w*|breathing complications|difficulty breathing|dyspnea/i],
+  ['cough', /\bcough\b/i],
+  ['urinary', /urinary complications|dysuria|\bfrequency\b|\burgency\b|hesitancy|urinary incontinence|nocturia|urinary retention|flank pain|blood in urine|hematuria/i],
+  ['constipation', /constipation/i],
+  ['nausea or vomiting', /nausea|vomiting/i],
+  ['abdominal pain', /abdominal pain|abd\.? pain/i],
+  ['chest pain', /chest pain/i],
+  ['dizziness', /dizz\w*/i],
+  ['headache', /headaches?|\bHAs?\b/],
+  ['pain', /(?<!chest |flank |abdominal |abd |abd\. )\bpain\b(?! (?:level|score|scale|management|medication|control|regimen))/i],
+];
+const NEG_MARK = /\bden(?:ies|ied|ying)\b|\breports? no\b|\bno (?:complaints? of|c\/o|reports? of)\b|\bwithout\b|\bno\b(?=[^.]*\breported\b)/gi;
+const POS_MARK = /\bcomplain(?:s|ed|ing)? of\b|\breports?\b(?! no\b)|\bc\/o\b|\bendorses?\b/gi;
+
+/** For one sentence: { neg: Set of group names said to be absent, pos: Set said to be present }. Each symptom word
+ *  belongs to the nearest marker before it ("denies chest pain but reports dizziness" is read as two halves). */
+function sentencePolarity(sentence) {
+  const marks = [];
+  for (const m of sentence.matchAll(NEG_MARK)) marks.push([m.index, 'neg']);
+  for (const m of sentence.matchAll(POS_MARK)) marks.push([m.index, 'pos']);
+  marks.sort((a, b) => a[0] - b[0]);
+  const out = { neg: new Set(), pos: new Set() };
+  if (!marks.length) return out;
+  for (const [name, re] of CLASH_GROUPS) {
+    for (const m of sentence.matchAll(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`))) {
+      const before = marks.filter((k) => k[0] < m.index).pop();
+      if (before) out[before[1]].add(name);
+    }
+  }
+  return out;
+}
+
+/**
+ * [{ what, a, b }] for one patient: two statements in today's note (text as it will be sent, plus the exam lines) that
+ * do not fit together. `what` names the subject; a and b are the two statements, word for word.
+ */
+export function noteClashes(p) {
+  const out = [];
+  const add = (what, a, b) => { if (!out.some((x) => x.a === a && x.b === b)) out.push({ what, a, b }); };
+  const full = fullNote(p);
+  const sentences = full.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+  const neg = {};
+  const pos = {};
+  for (const sn of sentences) {
+    const pol = sentencePolarity(sn);
+    for (const k of pol.neg) neg[k] ??= sn;
+    for (const k of pol.pos) pos[k] ??= sn;
+  }
+  for (const [name] of CLASH_GROUPS) if (neg[name] && pos[name] && neg[name] !== pos[name]) add(name, neg[name], pos[name]);
+  const score = full.match(/\bPain (\d{1,2})\/10\b/);
+  if (neg.pain && score && +score[1] > 0) add('pain', neg.pain, score[0]);
+  const e = p.exam || {};
+  const skin = String(e.Skin ?? '').trim();
+  if (/\bintact\b/i.test(skin) && incisionExam(p)) add('skin', `Skin: ${skin}`, incisionExam(p));
+  const resp = String(e.Resp ?? '').trim();
+  if (/\bclear\b|\bCTA\b|no wheez/i.test(resp) && p.o2?.wheeze === 'reports') add('wheezing', `Resp: ${resp}`, 'Pt reports wheezing.');
+  const ext = String(e.Ext ?? '').trim();
+  if (/\bno (?:lower leg |lower extremity |pedal |peripheral )?edema\b/i.test(ext) && /\d\+|trace/i.test(edemaExam(p))) add('edema', `Ext: ${ext}`, edemaExam(p));
+  if (p.incision?.act === 'Visualized incision' && p.incision?.state === 'dressing') add('incision', incisionSubjective(p), incisionExam(p));
+  const typed = String(p.text || '');
+  const liters = typed.match(/\bon \d{1,2}(?:\.\d)? ?L\b[^.]*\./i);
+  if (p.o2?.room && liters) add('oxygen', 'Pt on room air.', liters[0]);
+  const ra = typed.match(/[^.]*\broom air\b[^.]*\./i);
+  if (o2Liters(p.o2?.liters) && !p.o2?.room && ra && !/Pt on room air\./.test(ra[0])) add('oxygen', ra[0].trim(), `Pt on ${o2Liters(p.o2.liters)} L O2`);
+  return out;
+}
+// ===== APP-11-26B  END =====
+
+// ===== APP-11-26D  START: long-standing settings carried to the next day =====
+// Only what a patient HAS is carried: the oxygen set-up, the kind of catheter, the kind of ostomy, a PEG tube.
+// Nothing the patient said or that was found that day (shortness of breath, cough, "denies any complications",
+// drainage, output, skin) is carried - those are tapped again each day.
+const STANDING = { o2: ['liters', 'via', 'when', 'room', 'pap'], gu: ['cath', 'ostomy', 'peg'] };
+
+/** { o2: {...}, gu: {...} } with only the long-standing keys that are set on this patient's note, or null. */
+export function standingState(q) {
+  const out = {};
+  for (const [root, keys] of Object.entries(STANDING)) {
+    const from = q?.[root] || {};
+    const kept = Object.fromEntries(keys.filter((k) => from[k] != null && from[k] !== '' && from[k] !== false).map((k) => [k, from[k]]));
+    if (Object.keys(kept).length) out[root] = kept;
+  }
+  if (out.o2 && !o2Sentence({ o2: out.o2 })) delete out.o2;
+  if (out.gu && !guSentence({ gu: out.gu })) delete out.gu;
+  return Object.keys(out).length ? out : null;
+}
+
+/** The sentences those settings write: "Pt on 2 L O2 via nasal cannula. Foley catheter in place." */
+export function standingText(st) {
+  return [st?.o2 ? o2Sentence({ o2: st.o2 }) : '', st?.gu ? guSentence({ gu: st.gu }) : ''].filter(Boolean).join(' ');
+}
+
+/** What is still waiting to be confirmed on today's note: p.carriedSet = { from, o2: [keys], gu: [keys] }. */
+export function pendingStanding(p) {
+  const c = p.carriedSet;
+  if (!c) return null;
+  const pick = (root) => Object.fromEntries((c[root] || []).filter((k) => p[root]?.[k] != null).map((k) => [k, p[root][k]]));
+  const st = {};
+  if (Object.keys(pick('o2')).length) st.o2 = pick('o2');
+  if (Object.keys(pick('gu')).length) st.gu = pick('gu');
+  return Object.keys(st).length ? st : null;
+}
+// ===== APP-11-26D  END =====
+

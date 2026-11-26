@@ -1,0 +1,52 @@
+// Made-up patients only. The row of detail buttons folds; "Put in note" reads "In note" when it is on (APP-11-26E).
+const { chromium, devices } = require('playwright');
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL', m); } };
+(async () => {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ ...devices['Pixel 7'], serviceWorkers: 'block' });
+  const page = await ctx.newPage();
+  const errors = []; page.on('pageerror', (e) => errors.push(String(e)));
+  await page.goto('http://127.0.0.1:8765/index.html'); await page.waitForSelector('[data-act="add-building"]');
+  await page.click('[data-act="add-building"]'); await page.fill('#new-building', 'Test Hall'); await page.click('[data-act="save-building"]'); await page.waitForTimeout(400);
+  await page.fill('#date', '2026-11-26'); await page.dispatchEvent('#date', 'change'); await page.waitForTimeout(250);
+  const addPt = async (l, m) => { await page.click('[data-act="add-pt"]'); await page.fill('#ap-last', l); await page.fill('#ap-first', 'Pat'); await page.fill('#ap-mrn', m); await page.click('[data-act="add-pt-save"]'); await page.waitForTimeout(300); };
+  await addPt('Duck', '9002'); await addPt('Goof', '9003');
+  const openPt = async (i) => { await page.locator('[data-act="open"]').nth(i).click(); await page.waitForSelector('[data-act="loc"]'); await page.click('[data-act="loc"]'); await page.click('[data-act="pain-pick"][data-v="2"]'); await page.click('button.primary[data-act="pain"]'); await page.waitForSelector('#note'); };
+  const prev = async () => (await page.textContent('#detail-preview')) || '';
+  const tap = async (sel) => { await page.click(sel); await page.waitForTimeout(230); };
+  await openPt(0);
+  ok(await page.isVisible('[data-chipsfold]') && await page.isVisible('.dchip[data-dkey="o2"]') && (await page.textContent('[data-chipsfold]')).includes('Details'), 'the row of buttons has a "Details" heading and starts open');
+  // Put in note -> In note
+  await page.click('.dchip[data-dkey="exam"]'); await page.waitForSelector('[data-pick="exn.sys"]');
+  const btn = '[data-pick="exn.sys"][data-v="Resp"]';
+  ok((await page.textContent(btn)).trim() === 'Put in note' && !(await page.$eval(btn, (e) => e.classList.contains('on'))), 'off: it reads "Put in note"');
+  const offColor = await page.$eval(btn, (e) => getComputedStyle(e).backgroundColor);
+  await tap('[data-exsys="Resp"][data-exv="Diminished at the bases"]'); await tap(btn);
+  const onColor = await page.$eval(btn, (e) => getComputedStyle(e).backgroundColor);
+  const preset = await page.$eval('[data-exsys="Resp"].on', (e) => getComputedStyle(e).backgroundColor);
+  ok((await page.textContent(btn)).trim() === 'In note' && onColor !== offColor && onColor === preset, `on: it reads "In note" and takes the same colour as a pressed button (${onColor})`);
+  ok((await page.textContent('[data-pick="exn.sys"][data-v="CV"]')).trim() === 'Put in note', 'the other systems still read "Put in note"');
+  await tap(btn);
+  ok((await page.textContent(btn)).trim() === 'Put in note' && (await page.$eval(btn, (e) => getComputedStyle(e).backgroundColor)) === offColor, 'tapping it again turns it back');
+  await tap(btn);
+  // fold the row of buttons
+  await page.click('.dchip[data-dkey="o2"]'); await page.waitForSelector('[data-o2l="2"]'); await tap('[data-o2l="2"]');
+  const noteH = async () => page.$eval('#note', (e) => e.getBoundingClientRect().top);
+  const before = await noteH();
+  await tap('[data-chipsfold]');
+  const head = (await page.textContent('[data-chipsfold]')).replace(/\s+/g, ' ');
+  ok(!(await page.isVisible('.dchip[data-dkey="o2"]')) && !(await page.$('.dpanel')), 'tapping "Details" folds the buttons and closes the open panel');
+  ok(head.includes('Pain') && head.includes('O2') && head.includes('Exam') && !head.includes('Labs'), 'folded, the heading lists which details are filled: ' + head);
+  ok((await noteH()) < before - 150, `the note moves up the screen (${Math.round(before)}px -> ${Math.round(await noteH())}px)`);
+  ok((await prev()).includes('Pt on 2 L O2.') && (await prev()).includes('On exam: Resp diminished at the bases.'), 'what was set is still in the note');
+  await page.screenshot({ path: require('os').tmpdir() + '/shot_chipsfold.png' });
+  await page.goBack(); await page.waitForSelector('[data-act="open"]');
+  await openPt(1);
+  ok(!(await page.isVisible('.dchip[data-dkey="o2"]')) && (await page.textContent('[data-chipsfold]')).includes('Pain'), 'the next patient opens with the row folded too, showing that patient\'s own filled details');
+  await tap('[data-chipsfold]');
+  ok(await page.isVisible('.dchip[data-dkey="o2"]'), 'tapping it again opens the row');
+  ok(errors.length === 0, 'no page errors: ' + errors.join(' | '));
+  console.log(`ui 11-26E: ${pass} passed, ${fail} failed`);
+  await browser.close(); process.exit(fail ? 1 : 0);
+})();

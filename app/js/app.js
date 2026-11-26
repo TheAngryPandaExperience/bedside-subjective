@@ -1,9 +1,10 @@
 // Bedside Subjective: screens and event handling.
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
-import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, incisionExam, incisionSubjective, edemaExam, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
-import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getClock, saveClock } from './store.js';
+import './version.js'; // sets self.BEDSIDE_VERSION
+import { parseRoster, parseVitals, matchVitals, formatVitals, checkRoster } from './parsers.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, incisionExam, incisionSubjective, edemaExam, noteClashes, standingState, standingText, pendingStanding, stripRetapped, listLabel, roomParts, sortPatients, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
+import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getRosters, saveRosters, getClock, saveClock } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
 import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS, O2_LITERS, GU_SYMPTOMS, CATHETERS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS, INCISION_SIDES, INCISION_SITES, INCISION_STATES, INCISION_ACTS, EDEMA_GRADES, EDEMA_KINDS, EDEMA_PRESET_RE } from './defaults.js';
@@ -16,7 +17,7 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
 // more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
 // never part of the daily summary that goes to the notes.
-const APP_VERSION = 27;
+const APP_VERSION = self.BEDSIDE_VERSION; // set in js/version.js - the one place the number lives
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -143,6 +144,7 @@ async function boot() {
   if (settings.buildings.length && !settings.buildings.includes(settings.currentBuilding)) settings.currentBuilding = settings.buildings[0];
   day = await loadDay(date, settings.currentBuilding);
   charts = await getCharts().catch(() => ({})); // APP-11-22-CHART
+  rosters = await getRosters().catch(() => ({})); // APP-11-26F
   timeclock = await getClock().catch(() => ({})); // APP-11-24
   render();
   pullAllCharts(); // APP-11-25H (was the open building only): every building's chart, not waited for; the buttons use what is on the phone until it arrives
@@ -219,16 +221,18 @@ function renderDay() {
         <button class="primary" data-act="add-pt-save">Add to list</button>
       </div>
     </div>
+    ${day.patients.length > 1 ? `<div class="row" id="sortrow" style="align-items:center;margin-bottom:8px"><span class="small muted">Order:</span>
+      ${[['name', 'Last name'], ['room', 'Room'], ['unit', 'Unit']].map(([k, label]) => `<button class="dpreset ${settings.sortBy === k ? 'on' : ''}" data-act="sort" data-by="${k}" style="min-height:36px;padding:4px 10px">${label}</button>`).join('')}</div>` : ''}
     ${day.patients.length ? `<div class="patients">${day.patients.map((p, i) => `
       <button class="pt-btn ${i === nextIdx ? 'next' : ''}" data-act="open" data-i="${i}">
-        <span class="name">${esc(patientLabel(p, i))}</span>
-        <span class="meta">${[p.room, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}${activeAbx(p.mrn, day.date).length ? ' <span class="abx-tag">ABX</span>' : ''}${blankCount(p.text) ? ' <span class="abx-tag">___ to fill</span>' : ''}</span>
+        <span class="name">${esc(listLabel(p, i))}</span>
+        <span class="meta">${[roomParts(p.room).unit, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}${activeAbx(p.mrn, day.date).length ? ' <span class="abx-tag">ABX</span>' : ''}${blankCount(p.text) ? ' <span class="abx-tag">___ to fill</span>' : ''}</span>
         <span class="status">${statusPill(p)}</span>
       </button>`).join('')}</div>
       <div style="margin-top:18px">
         <button class="ghost danger" data-act="del-day">Delete this day</button>
         <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(bn ? `${bn}, ` : '')}${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
-          <button class="danger" data-act="del-day-yes">Delete day</button><button data-act="del-day-no">Keep</button></div>
+          <button class="danger" data-act="del-day-yes">Delete day</button>${day.patients.some((x) => !String(x.text || '').trim()) && day.patients.some((x) => String(x.text || '').trim()) ? `<button data-act="del-day-empty">Only remove the ${day.patients.filter((x) => !String(x.text || '').trim()).length} with no note</button>` : ''}<button data-act="del-day-no">Keep</button></div>
       </div>`
       : `<div class="empty card"><p><b>No patients for ${esc(bn ? `${bn} on ` : '')}${esc(formatDate(day.date))} yet.</b></p><p>Tap <b>Load patients</b> and choose your PCC roster as a PDF, Word file or photo, or paste the text. Or tap <b>Roll over</b> to bring patients from an earlier day.</p></div>`}
     ${day.patients.length ? `<div class="bottom-bar"><div class="inner">
@@ -324,6 +328,7 @@ function renderImport() {
       <p class="muted small">${roster
         ? 'A PDF exported from PCC reads exactly. For a photo, fill the frame with the list, hold steady and avoid glare. A long list can go in several photos: patients already added are skipped. Any MRN that might be misread is highlighted for you to check.'
         : 'Vitals are matched to your patients by MRN, then by name. Anything not matched stays blank.'}</p>
+      ${roster ? `<div id="rosterbox">${rosterBoxHtml()}</div>` : ''}
       <div class="row">
         <label class="btn grow" style="display:flex;align-items:center;justify-content:center;color:var(--ink)">Choose file
           <input type="file" id="file" accept=".pdf,.docx,.txt,image/*" hidden></label>
@@ -342,6 +347,7 @@ function renderImport() {
     const bar = prog.querySelector('i');
     prog.hidden = false;
     app.querySelector('#progtext').textContent = `Reading ${file.name}…`;
+    view.ocr = /^image\//.test(file.type || '') || /\.(jpe?g|png|heic|webp)$/i.test(file.name || ''); // APP-11-26A: a photo is read by OCR
     try {
       const text = await fileToText(file, (p) => { bar.style.width = `${Math.round(p * 100)}%`; }, view.kind === 'roster' ? judgeRoster : judgeVitals);
       app.querySelector('#raw').value = text;
@@ -352,6 +358,7 @@ function renderImport() {
     }
     prog.hidden = true;
   };
+  if (roster) pullRoster(day.building, day.date); // APP-11-26F: ask the computer's roster folder as the screen opens (not waited for)
   app.querySelector('#file').addEventListener('change', (e) => handleFile(e.target.files[0]));
   app.querySelector('#photo').addEventListener('change', (e) => handleFile(e.target.files[0]));
 }
@@ -379,22 +386,38 @@ function judgeVitals(text) {
 function showParsed(text) {
   const out = app.querySelector('#result');
   if (view.kind === 'roster') {
-    const rows = parseRoster(text);
+    // APP-11-26A: every row is checked against the building's chart on this phone (a second source for names and MRNs).
+    // A row that is not confirmed starts unticked, so nothing doubtful is added without your tick.
+    const known = charts[day.building]?.chart?.patients;
+    let rows = parseRoster(text);
+    if (known) {
+      const read = rows; // as the reading itself flagged them, before the chart was looked at
+      rows = checkRoster(rows, known).map((r, i) => {
+        // a clean row from a PDF or pasted text that is simply new to the building is not held back
+        if (!view.ocr && r.chart === 'new' && !read[i].flag) return { ...r, flag: '', note: 'not in the chart (a new patient?)' };
+        return r;
+      });
+    }
     view.rows = rows;
     if (!rows.length) {
       out.innerHTML = '<p class="card">No names with MRNs found. Check the text above, edit it if needed, and tap Read pasted text.</p>';
       return;
     }
     const flagged = rows.filter((r) => r.flag).length;
+    const confirmed = rows.filter((r) => r.chart === 'match').length;
     out.innerHTML = `
-      <h2>${rows.length} patients found${flagged ? ` · <span style="color:var(--amber)">${flagged} to check</span>` : ''}</h2>
+      <h2>${rows.length} patients found${known ? ` · ${confirmed} confirmed by the chart` : ''}${flagged ? ` · <span style="color:var(--amber)">${flagged} to check</span>` : ''}</h2>
+      ${known ? '' : `<p class="small" id="nochart" style="color:var(--amber)">No chart on this phone for ${esc(bname(day.building) || 'this building')}, so the names and MRNs could not be checked against it. "Get all charts" on the list screen brings it.</p>`}
+      ${flagged ? '<p class="small muted" id="tickhint">Rows to check start unticked. Compare each with the paper, fix it if needed, and tick it to add it.</p>' : ''}
       <div class="review">${rows.map((r, i) => `
         <div class="review-row ${r.flag ? 'flagged' : ''}" data-i="${i}">
-          <input type="checkbox" checked aria-label="Include ${esc(r.last)}">
+          <input type="checkbox" ${r.flag ? '' : 'checked'} aria-label="Include ${esc(r.last)}">
           <input class="last" value="${esc(r.last)}" aria-label="Last name">
           <input class="first" value="${esc(r.first)}" aria-label="First name">
           <input class="mrn mono" value="${esc(r.mrn)}" inputmode="numeric" aria-label="MRN">
+          <input class="room" value="${esc(r.room || '')}" placeholder="Room (as in the list)" aria-label="Room" style="grid-column:2/-1;font-size:.85rem;padding:5px 8px">
           ${r.flag ? `<div class="flag">${esc(r.flag)}</div>` : ''}
+          ${!r.flag && (r.chart === 'match' || r.note) ? `<div class="small muted" style="grid-column:1/-1">${r.chart === 'match' ? '✓ in the chart' : ''}${r.note ? `${r.chart === 'match' ? ' - ' : ''}${esc(r.note)}` : ''}</div>` : ''}
         </div>`).join('')}</div>
       <p class="small muted" style="margin-top:10px">${day.patients.length ? 'Patients already on today\'s list are skipped.' : ''}</p>
       <button class="primary" data-act="add-roster" style="width:100%">Add to ${esc(day.building ? `${bname(day.building)} · ` : '')}${esc(formatDate(day.date))}</button>`;
@@ -431,7 +454,7 @@ async function addRoster() {
       last: row.querySelector('.last').value.trim(),
       first: row.querySelector('.first').value.trim(),
       mrn: row.querySelector('.mrn').value.trim(),
-      room: r.room,
+      room: row.querySelector('.room')?.value.trim() ?? r.room,
       status: 'new',
       text: '',
     };
@@ -440,6 +463,7 @@ async function addRoster() {
     day.patients.push(p);
     added++;
   });
+  if (settings.sortBy) day.patients = sortPatients(day.patients, settings.sortBy); // APP-11-26F
   await saveDay(day);
   toast(`Added ${added} patient${added === 1 ? '' : 's'}`);
   history.back();
@@ -501,17 +525,45 @@ async function findLastNote(p) {
   if (p.rollFrom) {
     const d = days.find((x) => x.date === p.rollFrom.date && x.building === p.rollFrom.building);
     const q = d?.patients.find((x) => x.mrn === p.mrn && x.text);
-    if (q) return { date: d.date, building: d.building, note: fullNote(q), pain: q.pain, painSide: q.painSide, painSite: q.painSite, painType: q.painType, location: q.location };
+    if (q) return { date: d.date, building: d.building, note: fullNote(q), pain: q.pain, painSide: q.painSide, painSite: q.painSite, painType: q.painType, location: q.location, standing: standingState(q) };
   }
   for (const d of days) {
     if (d.date >= day.date) continue;
     const q = d.patients.find((x) => x.mrn === p.mrn && x.text);
     if (!q) continue;
     const better = !best || d.date > best.date || (d.date === best.date && d.building === day.building);
-    if (better) best = { date: d.date, building: d.building, note: fullNote(q), pain: q.pain, painSide: q.painSide, painSite: q.painSite, painType: q.painType, location: q.location };
+    if (better) best = { date: d.date, building: d.building, note: fullNote(q), pain: q.pain, painSide: q.painSide, painSite: q.painSite, painType: q.painType, location: q.location, standing: standingState(q) };
   }
   return best;
 }
+
+// ===== APP-11-26D  START: long-standing settings carried to today's note, to be confirmed =====
+/** Copy the last note's oxygen set-up, catheter, ostomy and PEG tube into today's note as settings (never over
+ *  something already set today) and remember which ones still need a look. */
+function applyStanding(p, last) {
+  const st = settings.carryStanding !== false ? last?.standing : null;
+  if (!st) return;
+  const took = { from: last.date, o2: [], gu: [] };
+  for (const root of ['o2', 'gu']) {
+    if (!st[root] || p[root]) continue;
+    p[root] = { ...st[root] };
+    took[root] = Object.keys(st[root]);
+  }
+  if (took.o2.length || took.gu.length) p.carriedSet = took;
+}
+
+function carriedSetHtml(p) {
+  const st = pendingStanding(p);
+  if (!st) return '';
+  return `<div class="banner" id="carriedset" style="margin-bottom:8px;display:block"><div>Carried from ${esc(formatDate(p.carriedSet.from))}, not confirmed today: <b>${esc(standingText(st))}</b></div>
+    <div class="row" style="margin-top:6px"><button class="primary" data-act="standing-ok">Still right</button><button class="ghost" data-act="standing-drop">Remove</button></div></div>`;
+}
+
+function carriedSetRedraw(p) {
+  const host = document.getElementById('carriedhost');
+  if (host) host.innerHTML = carriedSetHtml(p);
+}
+// ===== APP-11-26D  END =====
 
 function lastNoteLabel(last) {
   return `${formatDate(last.date)}${last.building && last.building !== day.building ? ` at ${bname(last.building)}` : ''}`;
@@ -522,7 +574,7 @@ function renderPatient() {
   const header = `
     <div class="top">
       <button class="ghost" data-act="back">‹ List</button>
-      <div class="grow"><h1 class="mono" style="font-size:1rem">${esc(patientLabel(p, view.i))}</h1></div>
+      <div class="grow"><h1 class="mono" style="font-size:1rem">${esc(listLabel(p, view.i))}</h1></div>
       <span id="saved" class="pill p-good">${p.text ? 'Saved' : ''}</span>
       <button class="ghost small" data-act="edit-pt">Edit name</button>
       ${settings.buildings.length > 1 ? `<button class="bchip on small" data-act="pick-building" aria-haspopup="true">${esc(bname(day.building))} ▾</button>` : ''}
@@ -576,6 +628,7 @@ function renderPatient() {
     if (settings.varyWording !== false) p.text = varyWording(p.text, last?.note); // APP-11-11
     p.status = 'progress';
     p.fresh = true;
+    applyStanding(p, last); // APP-11-26D
     saveDay(day);
   }
 
@@ -586,9 +639,11 @@ function renderPatient() {
       ${highPain ? `<div class="banner" id="painbanner">Pain is ${p.pain}/10. Is "pain within acceptable limits" still right?
         <button class="ghost" data-act="drop-pain-sentence">Remove that sentence</button></div>` : ''}
       ${p.carriedFrom && p.status !== 'done' ? `<div class="banner" style="margin-bottom:8px">Started from the ${esc(formatDate(p.carriedFrom))} note. Check pain, vitals and anything new.</div>` : ''}
+      <div id="carriedhost">${carriedSetHtml(p)}</div>
       <div class="details" id="details"></div>
       <textarea id="note" spellcheck="true" autocapitalize="sentences" aria-label="Subjective note">${esc(p.text)}</textarea>
       <div class="detail-preview small" id="detail-preview"></div>
+      <div id="clashbox"></div>
       ${last ? `<details class="card" id="compare" style="margin-bottom:10px"><summary>Compare with last note (${esc(lastNoteLabel(last))})</summary>
         <div class="small muted" style="margin:6px 0">
           <span style="background:var(--accent-soft);color:var(--accent);padding:0 3px">added today</span>
@@ -668,9 +723,11 @@ function mountDetails(p, openKey) {
     if (!box.isConnected) return;
     // Show the whole note as it will be sent, with the details in their places.
     const ex = [...examLines(p), ...tapLines(p)]; // APP-11-20, APP-11-22-CHART: these lines are shown under the note, as they will be sent
-    if (!detailSentences(p).length && !ex.length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
     const ta = document.getElementById('note');
     const shown = ta ? { ...p, text: ta.value } : p;
+    const cbox = app.querySelector('#clashbox'); // APP-11-26B: things in this note that do not fit together
+    if (cbox) cbox.innerHTML = clashHtml(noteClashes(shown));
+    if (!detailSentences(p).length && !ex.length) { app.querySelector('#detail-preview').innerHTML = ''; return; }
     app.querySelector('#detail-preview').innerHTML = `<div class="muted">As it will be sent:</div>${esc(fullNote(shown))}${ex.map((x) => `<div>${esc(x)}</div>`).join('')}`;
   };
   const save = async () => {
@@ -706,10 +763,16 @@ function mountDetails(p, openKey) {
 
   const draw = () => {
     const d = DETAILS.find((x) => x.key === open);
-    box.innerHTML = `<div class="dchips">${DETAILS.map((x) => `
+    // APP-11-26E: the row of detail buttons folds to one line that says which are filled; remembered on this phone
+    const chipsShut = !!settings.folded?.chips;
+    const set = DETAILS.filter(filled).map((x) => x.label);
+    box.innerHTML = `<button class="ghost" data-chipsfold aria-expanded="${!chipsShut}" style="text-align:left;min-height:36px;padding:2px 0;width:100%">
+        <b>${chipsShut ? '▸' : '▾'} Details</b>${chipsShut ? `<span class="small muted"> - ${set.length ? esc(set.join(', ')) : 'none filled'}</span>` : ''}</button>
+      <div class="dchips" ${chipsShut ? 'hidden' : ''}>${DETAILS.map((x) => `
       <button class="dchip ${filled(x) ? 'filled' : ''} ${x.key === open ? 'open' : ''}" data-dkey="${x.key}" aria-expanded="${x.key === open}">
         ${esc(x.label)}${filled(x) ? ` <small>${esc(shown(x).slice(0, 14))}${shown(x).length > 14 ? '…' : ''}</small>` : ''}</button>`).join('')}</div>
-      ${d ? panel(d) : ''}`;
+      ${d && !chipsShut ? panel(d) : ''}`;
+    if (MU_PANELS.includes(open)) muFill(box, open); // APP-11-26C
     wireAbxForm(box);
     box.querySelector('#dinput')?.addEventListener('input', (e) => {
       p.fields[open] = e.target.value;
@@ -755,7 +818,31 @@ function mountDetails(p, openKey) {
   box.addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.abx) { await abxAction(p, b); if (!box.isConnected) return; await save(); }
+    if (MU_PANELS.includes(open) && b.closest('.dpanel') && muCounts(b)) { // APP-11-26C: count the tap for "Most used"
+      settings.used ??= {};
+      const u = (settings.used[open] ??= {});
+      u[muSig(b)] = (u[muSig(b)] || 0) + 1;
+      saveSettings(settings);
+    }
+    if (p.carriedSet && (open === 'o2' || open === 'bm') && b.closest('.dpanel') && muCounts(b)) { // APP-11-26D: you are setting it yourself now
+      p.carriedSet[open === 'o2' ? 'o2' : 'gu'] = [];
+      if (!p.carriedSet.o2.length && !p.carriedSet.gu.length) delete p.carriedSet;
+      carriedSetRedraw(p);
+    }
+    if ('chipsfold' in b.dataset) { // APP-11-26E: fold or open the row of detail buttons; an open panel closes with it
+      settings.folded = { ...(settings.folded || {}), chips: !settings.folded?.chips };
+      if (settings.folded.chips) open = null;
+      await saveSettings(settings);
+    } else if (b.dataset.sfold) { // APP-11-26C: fold or open one section; remembered
+      settings.folded = { ...(settings.folded || {}), [`s.${b.dataset.sfold}`]: !secShut(b.dataset.sfold) };
+      await saveSettings(settings);
+    } else if (b.dataset.sfoldall) {
+      const next = { ...(settings.folded || {}) };
+      for (const id of PANEL_SECS[b.dataset.sfoldall] || []) next[`s.${id}`] = b.dataset.to === 'shut';
+      settings.folded = next;
+      await saveSettings(settings);
+    }
+    else if (b.dataset.abx) { await abxAction(p, b); if (!box.isConnected) return; await save(); }
     else if (b.dataset.dkey) {
       open = open === b.dataset.dkey ? null : b.dataset.dkey; abxMode = null;
       // APP-11-22-CHART: opening Dx or Meds asks the computer again when the chart on the phone is over 10 minutes old
@@ -866,7 +953,7 @@ function bmPanel(p) {
   const yest = addDays(day.date, -1);
   const how = b?.how || settings.bmHow || 'both';
   const typed = b?.date && b.date !== day.date && b.date !== yest ? (() => { const [y, m, d] = b.date.split('-').map(Number); return `${m}/${d}/${String(y).slice(-2)}`; })() : '';
-  return `<div class="small muted">Last BM</div>
+  return foldAllRow('bm') + sect('bm.bm', 'Last BM', bmSentence(p), `
     <div class="row">
       <button class="dpreset ${b?.date === yest ? 'on' : ''}" data-bm="yesterday">Yesterday</button>
       <button class="dpreset ${b?.date === day.date ? 'on' : ''}" data-bm="today">Today</button>
@@ -876,7 +963,7 @@ function bmPanel(p) {
     <div class="row">${BM_KINDS.map((k) => `<button class="dpreset ${b?.kind === k ? 'on' : ''}" data-bmkind="${k}" ${b ? '' : 'disabled'}>${k[0].toUpperCase()}${k.slice(1)}</button>`).join('')}</div>
     <div class="small muted">How it is written</div>
     <div class="row">${BM_HOW.map(([k, label]) => `<button class="dpreset ${how === k ? 'on' : ''}" data-bmhow="${k}">${esc(label)}</button>`).join('')}</div>
-    <div class="small" id="bmhint">${esc(bmSentence(p))}</div>`;
+    <div class="small" id="bmhint">${esc(bmSentence(p))}</div>`);
 }
 
 // ===== APP-11-25  START: O2 panel; urinary, catheter and ostomy inside the BM panel =====
@@ -886,7 +973,9 @@ function o2Panel(p) {
   const typed = o.liters && !O2_LITERS.includes(cur) ? o.liters : '';
   const noteText = document.getElementById('note')?.value ?? p.text;
   const clash = o.sob === 'reports' && saysNoBreathingTrouble(noteText);
-  return `<div class="small muted">Liters of O2</div>
+  const part = (x) => o2Sentence({ o2: x }); // what is set in one section, for its heading when folded
+  return foldAllRow('o2') + sect('o2.oxygen', 'Oxygen', part({ liters: o.liters, via: o.via, when: o.when, room: o.room, pap: o.pap, wean: o.wean }), `
+    <div class="small muted">Liters of O2</div>
     <div class="dkeys">${O2_LITERS.map((l) => `<button data-o2l="${l}" class="${cur === l ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="row"><input id="o2other" value="${esc(typed)}" placeholder="or type: 2.5" inputmode="decimal" autocomplete="off" style="flex:1;min-width:9rem">
       ${pk('o2.room', null, 'Room air', !!o.room)}</div>
@@ -894,7 +983,8 @@ function o2Panel(p) {
     <div class="row">${O2_DELIVERY.map((v) => pk('o2.via', v, cap(v), o.via === v)).join('')}</div>
     <div class="small muted">When</div>
     <div class="row">${O2_WHEN.map((v) => pk('o2.when', v, cap(v), o.when === v)).join('')}</div>
-    <div class="row">${O2_PAP.map((v) => pk('o2.pap', v, v, o.pap === v)).join('')}${pk('o2.wean', null, 'Weaning O2 as tolerated', !!o.wean)}</div>
+    <div class="row">${O2_PAP.map((v) => pk('o2.pap', v, v, o.pap === v)).join('')}${pk('o2.wean', null, 'Weaning O2 as tolerated', !!o.wean)}</div>`)
+    + sect('o2.symptoms', 'Breathing symptoms', part({ sob: o.sob, cough: o.cough, wheeze: o.wheeze, tx: o.tx }), `
     <div class="small muted">Shortness of breath</div>
     <div class="row">
       <button class="dpreset ${o.sob === 'denies' ? 'on' : ''}" data-o2sob="denies">Denies shortness of breath</button>
@@ -904,8 +994,8 @@ function o2Panel(p) {
     <div class="row">${pk('o2.cough', 'denies', 'Denies cough', o.cough === 'denies')}${COUGH_KINDS.map((v) => pk('o2.cough', v, `${cap(v)} cough`, o.cough === v)).join('')}</div>
     <div class="small muted">Wheezing</div>
     <div class="row">${pk('o2.wheeze', 'denies', 'Denies wheezing', o.wheeze === 'denies')}${pk('o2.wheeze', 'reports', 'Has wheezing', o.wheeze === 'reports')}</div>
-    <div class="row"><button class="dpreset ${o.tx ? 'on' : ''}" data-o2tx>Continues breathing treatments as ordered</button></div>
-    ${clash ? '<div class="small" id="o2clash"><b>Check the note:</b> it still says the patient denies breathing complications. Change that sentence if it no longer fits.</div>' : ''}
+    <div class="row"><button class="dpreset ${o.tx ? 'on' : ''}" data-o2tx>Continues breathing treatments as ordered</button></div>`)
+    + `${clash ? '<div class="small" id="o2clash"><b>Check the note:</b> it still says the patient denies breathing complications. Change that sentence if it no longer fits.</div>' : ''}
     <div class="small" id="o2hint">${esc(o2Sentence(p))}</div>`;
 }
 
@@ -914,29 +1004,32 @@ function guPanel(p) {
   const sx = g.sx || [];
   const noCath = g.cath ? '' : 'disabled';
   const noOst = g.ostomy ? '' : 'disabled';
-  return `<hr><div class="small muted">Bowel - pt complains of (tap any)</div>
-    <div class="row">${GI_SYMPTOMS.map((s) => pk('gu.gi', s, cap(s), (g.gi || []).includes(s), 'data-kind="multi"')).join('')}</div>
-    <hr><div class="small muted">Urinary</div>
+  const part = (o) => guSentence({ gu: o }); // what is set in one section, for its heading when folded
+  return sect('bm.bowel', 'Bowel complaints', part({ gi: g.gi }), `
+    <div class="small muted">Bowel - pt complains of (tap any)</div>
+    <div class="row">${GI_SYMPTOMS.map((s) => pk('gu.gi', s, cap(s), (g.gi || []).includes(s), 'data-kind="multi"')).join('')}</div>`)
+    + sect('bm.urinary', 'Urinary', part({ denies: g.denies, sx: g.sx, urine: g.urine }), `
     <div class="row"><button class="dpreset ${g.denies && !sx.length ? 'on' : ''}" data-gudenies>Pt denies urinary complications</button></div>
     <div class="small muted">Pt complains of (tap any)</div>
     <div class="row">${GU_SYMPTOMS.map((s) => `<button class="dpreset ${sx.includes(s) ? 'on' : ''}" data-gusx="${esc(s)}">${esc(cap(s))}</button>`).join('')}</div>
     <div class="small muted">Urine</div>
-    <div class="row">${URINE_LOOKS.map((v) => pk('gu.urine', v, cap(v), g.urine === v)).join('')}</div>
-    <hr><div class="small muted">Catheter</div>
+    <div class="row">${URINE_LOOKS.map((v) => pk('gu.urine', v, cap(v), g.urine === v)).join('')}</div>`)
+    + sect('bm.cath', 'Catheter', part({ cath: g.cath, cathOk: g.cathOk, cathSx: g.cathSx, drain: g.drain, trial: g.trial }), `
     <div class="row">${CATHETERS.map((c) => `<button class="dpreset ${g.cath === c ? 'on' : ''}" data-gucath="${c}">${c}</button>`).join('')}</div>
     <div class="row"><button class="dpreset ${g.cath && g.cathOk ? 'on' : ''}" data-gucathok ${noCath}>Denies any complications</button></div>
     <div class="small muted">Complains of${g.cath ? '' : ' (pick the catheter first)'}</div>
     <div class="row">${CATH_SYMPTOMS.map((s) => pk('gu.cathSx', s, cap(s), (g.cathSx || []).includes(s), `data-kind="multi" ${noCath}`)).join('')}</div>
-    <div class="row">${pk('gu.drain', null, 'Draining clear yellow urine', !!g.drain, noCath)}${pk('gu.trial', null, 'Voiding trial planned', !!g.trial, noCath)}</div>
-    <hr><div class="small muted">Ostomy</div>
+    <div class="row">${pk('gu.drain', null, 'Draining clear yellow urine', !!g.drain, noCath)}${pk('gu.trial', null, 'Voiding trial planned', !!g.trial, noCath)}</div>`)
+    + sect('bm.ostomy', 'Ostomy', part({ ostomy: g.ostomy, ostOk: g.ostOk, stoma: g.stoma, output: g.output, skin: g.skin }), `
     <div class="row">${OSTOMIES.map((c) => `<button class="dpreset ${g.ostomy === c ? 'on' : ''}" data-guost="${c}">${c}</button>`).join('')}</div>
     <div class="row">${pk('gu.ostOk', null, 'Denies any complications', !!g.ostOk, noOst)}${pk('gu.stoma', null, 'Stoma pink and moist', !!g.stoma, noOst)}</div>
     <div class="small muted">Output${g.ostomy ? '' : ' (pick the ostomy first)'}</div>
     <div class="row">${OSTOMY_OUTPUT.map(([k]) => pk('gu.output', k, cap(k), g.output === k, noOst)).join('')}</div>
     <div class="small muted">Skin around stoma</div>
-    <div class="row">${STOMA_SKIN.map((v) => pk('gu.skin', v, cap(v), g.skin === v, noOst)).join('')}</div>
-    <hr><div class="row">${pk('gu.peg', null, 'PEG tube', !!g.peg)}${pk('gu.pegOk', null, 'Site clean and dry', !!g.pegOk, g.peg ? '' : 'disabled')}</div>
-    <div class="small" id="guhint">${esc(guSentence(p))}</div>`;
+    <div class="row">${STOMA_SKIN.map((v) => pk('gu.skin', v, cap(v), g.skin === v, noOst)).join('')}</div>`)
+    + sect('bm.peg', 'PEG tube', part({ peg: g.peg, pegOk: g.pegOk }), `
+    <div class="row">${pk('gu.peg', null, 'PEG tube', !!g.peg)}${pk('gu.pegOk', null, 'Site clean and dry', !!g.pegOk, g.peg ? '' : 'disabled')}</div>`)
+    + `<div class="small" id="guhint">${esc(guSentence(p))}</div>`;
 }
 // ===== APP-11-25  END =====
 
@@ -944,6 +1037,57 @@ function guPanel(p) {
 const cap = (t) => t[0].toUpperCase() + t.slice(1);
 // One choice button. data-pick="o2.via" names where it is kept; with a value it is one-of, without it is on/off.
 const pk = (path, v, label, on, extra = '') => `<button class="dpreset ${on ? 'on' : ''}" data-pick="${path}"${v != null ? ` data-v="${esc(v)}"` : ''} ${extra}>${esc(label)}</button>`;
+
+// ===== APP-11-26C  START: sections that fold inside the long panels, and a "Most used" row =====
+// A folded section is still in the page (hidden), so what is set in it keeps working and its heading says what is set.
+// Which sections are folded is remembered on this phone (settings.folded['s.<id>']).
+const PANEL_SECS = {
+  o2: ['o2.oxygen', 'o2.symptoms'],
+  bm: ['bm.bm', 'bm.bowel', 'bm.urinary', 'bm.cath', 'bm.ostomy', 'bm.peg'],
+  ordered: ['ord.labs', 'ord.imaging', 'ord.other'],
+  exam: EXAM_SYSTEMS.map((x) => `exam.${x.key}`),
+};
+const secShut = (id) => !!settings.folded?.[`s.${id}`];
+/** One folding section: heading (with what is set when folded), optional extra controls on the heading row, body. */
+function sect(id, title, summary, inner, extra = '') {
+  const shut = secShut(id);
+  return `<div class="psec" data-sec="${id}" style="border-top:1px solid var(--line, #d8dde6);padding-top:4px;margin-top:6px">
+    <div class="row" style="align-items:center"><button class="ghost grow" data-sfold="${id}" aria-expanded="${!shut}" style="text-align:left;min-height:38px;padding:4px 0"><b>${shut ? '▸' : '▾'} ${esc(title)}</b>${shut && summary ? `<span class="small muted"> - ${esc(summary)}</span>` : ''}</button>${extra}</div>
+    <div class="psec-body" ${shut ? 'hidden' : ''}>${inner}</div></div>`;
+}
+const foldAllRow = (panel) => {
+  const all = PANEL_SECS[panel].every(secShut);
+  return `<div class="row" style="justify-content:flex-end"><button class="ghost" data-sfoldall="${panel}" data-to="${all ? 'open' : 'shut'}" style="min-height:34px;padding:2px 6px">${all ? 'Open all' : 'Fold all'}</button></div><div id="mostused"></div>`;
+};
+// "Most used": the choices tapped 3 times or more in this panel, the six most tapped, as a row at the top.
+// Each is a copy of the real button, so it does exactly the same thing and shows the same on / off state.
+const MU_PANELS = ['o2', 'bm', 'exam', 'ordered'];
+const MU_MIN = 3;
+const MU_SHOWN = 6;
+const muSig = (b) => JSON.stringify(Object.entries(b.dataset).filter(([k]) => k !== 'mu').sort());
+const muCounts = (b) => !['sfold', 'sfoldall', 'dclear', 'dnext', 'dclose', 'dkey', 'chart'].some((k) => k in b.dataset) && !b.disabled;
+function muFill(box, panel) {
+  const host = box.querySelector('#mostused');
+  if (!host) return;
+  const top = Object.entries(settings.used?.[panel] || {}).filter(([, n]) => n >= MU_MIN).sort((a, b) => b[1] - a[1]).slice(0, MU_SHOWN);
+  const real = [...box.querySelectorAll('.dpanel button')].filter((x) => !x.closest('#mostused'));
+  const rows = [];
+  for (const [sig] of top) {
+    const el = real.find((x) => muSig(x) === sig);
+    if (!el) continue;
+    const copy = el.cloneNode(true);
+    copy.dataset.mu = '1';
+    copy.removeAttribute('style');
+    const label = el.closest('.row, .dkeys')?.previousElementSibling;
+    const text = el.textContent.trim();
+    if (text.length <= 9 && label && label.classList.contains('muted')) copy.textContent = `${label.textContent.split('(')[0].trim()}: ${text}`;
+    rows.push(copy);
+  }
+  if (!rows.length) return;
+  host.innerHTML = '<div class="small muted">Most used</div><div class="row" id="murow"></div>';
+  rows.forEach((x) => host.querySelector('#murow').appendChild(x));
+}
+// ===== APP-11-26C  END =====
 
 /** Choices that cannot stand together, and extras that need their main choice. Called after every tap. */
 function tidyPicks(p, what) {
@@ -976,8 +1120,10 @@ function tidyPicks(p, what) {
 function orderedPanel(p) {
   const r = p.ordered || {};
   const has = (k, v) => (r[k] || []).includes(v);
-  return `<div class="small muted">Labs (tap any)</div>
-    <div class="row">${ORDER_LABS.map((v) => pk('ordered.labs', v, v, has('labs', v), 'data-kind="multi"')).join('')}</div>
+  const part = (x) => orderedItems({ ordered: x }).join(', '); // what is set in one section, for its heading when folded
+  return foldAllRow('ordered') + sect('ord.labs', 'Labs', part({ labs: r.labs }), `
+    <div class="row">${ORDER_LABS.map((v) => pk('ordered.labs', v, v, has('labs', v), 'data-kind="multi"')).join('')}</div>`)
+    + sect('ord.imaging', 'Imaging and tests', part({ tests: r.tests, us: r.us, usOther: r.usOther, dopSide: r.dopSide, dopLimb: r.dopLimb }), `
     <div class="small muted">Tests</div>
     <div class="row">${ORDER_TESTS.map((v) => pk('ordered.tests', v, v, has('tests', v), 'data-kind="multi"')).join('')}</div>
     <div class="small muted">Ultrasound of</div>
@@ -985,24 +1131,24 @@ function orderedPanel(p) {
       <input id="ordus" value="${esc(r.usOther ?? '')}" placeholder="or type the area" autocomplete="off" style="flex:1;min-width:9rem"></div>
     <div class="small muted">Ultrasound doppler of extremity (pick the side and upper or lower)</div>
     <div class="row">${DOPPLER_SIDES.map((v) => pk('ordered.dopSide', v, cap(v), r.dopSide === v)).join('')}</div>
-    <div class="row">${DOPPLER_LIMBS.map((v) => pk('ordered.dopLimb', v, `${cap(v)} extremity`, r.dopLimb === v)).join('')}</div>
-    <div class="small muted">Anything else ordered</div>
-    <div class="row"><input id="ordother" value="${esc(r.other ?? '')}" placeholder="Type…" autocomplete="off" style="flex:1"></div>
-    <div class="small" id="ordhint">${esc(orderedSentence(p))}</div>`;
+    <div class="row">${DOPPLER_LIMBS.map((v) => pk('ordered.dopLimb', v, `${cap(v)} extremity`, r.dopLimb === v)).join('')}</div>`)
+    + sect('ord.other', 'Anything else ordered', part({ other: r.other }), `
+    <div class="row"><input id="ordother" value="${esc(r.other ?? '')}" placeholder="Type…" autocomplete="off" style="flex:1"></div>`)
+    + `<div class="small" id="ordhint">${esc(orderedSentence(p))}</div>`;
 }
 // ===== APP-11-25B  END =====
 
 // Exam: one box per body system. Only the systems filled in are sent, as "Exam: Resp: ..." lines under the patient.
 function examPanel(p) {
   const e = p.exam || {};
-  return `<div class="small muted">Fill in only what you examined or what changed. The rest of the note's exam is left as it is. "Put in note" also writes that system's finding in the note text, as "On exam: ...".</div>
-    ${EXAM_SYSTEMS.map((s) => `<div>
-      <div class="row" style="align-items:center;margin:4px 0"><div class="small grow" style="font-weight:700">${esc(s.key)}</div>
-        ${pk('exn.sys', s.key, 'Put in note', (p.exn?.sys || []).includes(s.key), 'data-kind="multi" style="min-height:36px;padding:4px 10px"')}</div>
+  const lines = Object.fromEntries(examLines(p).map((ln) => ln.match(/^Exam: ([^:]+): (.*)$/)).filter(Boolean).map((m) => [m[1], m[2]]));
+  return `<div class="small muted">Fill in only what you examined or what changed. The rest of the note's exam is left as it is. "Put in note" also writes that system's finding in the note text, as "On exam: ...".</div>`
+    + foldAllRow('exam')
+    + EXAM_SYSTEMS.map((s) => sect(`exam.${s.key}`, s.key, lines[s.key] || '', `<div>
       ${s.presets.map((q) => `<button class="dpreset ${e[s.key] === q ? 'on' : ''}" data-exsys="${esc(s.key)}" data-exv="${esc(q)}" style="margin:0 6px 6px 0">${esc(q)}</button>`).join('')}
       <input data-exinput="${esc(s.key)}" value="${esc(e[s.key] ?? '')}" placeholder="Type or edit ${esc(s.key)}…" autocomplete="off" style="width:100%">
       ${s.key === 'Skin' ? incisionPanel(p) : ''}${s.key === 'Ext' ? edemaPanel(p) : ''}
-    </div>`).join('')}`;
+    </div>`, pk('exn.sys', s.key, (p.exn?.sys || []).includes(s.key) ? 'In note' : 'Put in note', (p.exn?.sys || []).includes(s.key), 'data-kind="multi" style="min-height:36px;padding:4px 10px"') /* APP-11-26E: the label says which state it is in */)).join('');
 }
 
 // ===== APP-11-25D  START: edema for each leg, under Ext =====
@@ -1219,6 +1365,7 @@ async function pullAllCharts({ loud = false } = {}) {
       chartsAll.done += 1;
       if (ok) got += 1;
       else if (/could not be reached|No computer address/.test(chartNote[id] || '')) { stopped = chartNote[id]; break; } // no point asking for the rest
+      await pullRoster(id, day.date); // APP-11-26F: and that building's roster for the day on screen
       chartsRedraw();
     }
   } finally {
@@ -1243,7 +1390,8 @@ function chartsHtml() {
     const note = chartNote[b];
     if (!c?.chart?.patients) return `<div class="small"><b>${esc(bname(b))}</b>: no chart on this phone${note ? ` - ${esc(note)}` : ''}</div>`;
     const age = Math.floor((Date.now() - (c.at || 0)) / dayMs);
-    return `<div class="small"><b>${esc(bname(b))}</b>: ${c.chart.patients.length} patients · chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}${age >= 1 ? ` <b>(${age} day${age === 1 ? '' : 's'} ago)</b>` : ''}${note ? `<div class="muted">last try: ${esc(note)}</div>` : ''}</div>`;
+    const ro = rosters[rosterKey(b)];
+    return `<div class="small"><b>${esc(bname(b))}</b>: ${ro ? `roster for ${esc(formatDate(day.date))}: ${ro.n} patients · ` : ''}${c.chart.patients.length} patients in the chart · chart made ${esc(c.chart.made || c.modified)} · pulled ${esc(chartTime(c.at))}${age >= 1 ? ` <b>(${age} day${age === 1 ? '' : 's'} ago)</b>` : ''}${note ? `<div class="muted">last try: ${esc(note)}</div>` : ''}</div>`;
   }).join('');
   const head = `<div class="row"><button class="ghost grow" data-act="fold" data-k="charts" aria-expanded="${!shut}" style="text-align:left;min-height:40px;padding-left:0"><b>${shut ? '▸' : '▾'} Dx and Meds on this phone</b></button>
       <span class="small muted">${chartsAll ? `Asking the computer… ${chartsAll.done}/${chartsAll.total}` : `${have} of ${settings.buildings.length} buildings`}</span></div>`;
@@ -1255,6 +1403,61 @@ function chartsHtml() {
   </div>`;
 }
 // ===== APP-11-25H  END =====
+
+// ===== APP-11-26F  START: the day's roster from the computer's roster folder =====
+// He saves the list from PCC into F:\_Daily Rosters\<Building> with the date in the file's name. The receiver hands
+// the file over; this phone reads it with the same reader as "Choose file" (a PDF's own text - nothing is photographed)
+// and keeps the text, so it can be loaded later with no connection. The file on the computer is never changed.
+let rosters = {}; // "<date>|<building id>" -> { file, modified, at, text, n }
+const rosterNote = {}; // same key -> why the last look found nothing, in words
+const rosterKey = (id = day?.building, date = day?.date) => `${date}|${id}`;
+
+async function pullRoster(id = day?.building, date = day?.date, { loud = false } = {}) {
+  if (!id || !date) return false;
+  const key = rosterKey(id, date);
+  let ok = false;
+  try {
+    if (!settings.receiverUrl && !/ts\.net$|^127\.|^localhost$/.test(location.hostname)) throw new Error('No computer address set (Settings).');
+    const res = await fetchPatient(`${receiverBase()}api/roster?building=${encodeURIComponent(bname(id))}&date=${encodeURIComponent(date)}`, { headers: { 'X-Token': settings.receiverToken || '' }, cache: 'no-store' });
+    if (res.status === 404) throw new Error('The receiver on the computer is an older one - it needs the 11/26/2026 version for rosters.');
+    if (!res.ok) throw new Error(res.status === 401 ? 'The receiver rejected the token. Check Settings.' : `Receiver error ${res.status}`);
+    const info = await res.json();
+    if (!info.found) rosterNote[key] = info.why || 'no roster in the folder';
+    else {
+      const bytes = Uint8Array.from(atob(info.data), (ch) => ch.charCodeAt(0));
+      const text = await fileToText(new File([bytes], info.file, { type: /\.pdf$/i.test(info.file) ? 'application/pdf' : '' }));
+      rosters[key] = { file: info.file, modified: info.modified, at: Date.now(), text, n: parseRoster(text).length, others: info.others || [] };
+      delete rosterNote[key];
+      await saveRosters(rosters);
+      ok = true;
+    }
+  } catch (err) {
+    rosterNote[key] = err instanceof TypeError ? 'The computer could not be reached.' : err.message;
+  }
+  if (loud) toast(ok ? `Roster ${rosters[key].file}: ${rosters[key].n} patients` : rosterNote[key], 4000);
+  const box = document.getElementById('rosterbox');
+  if (box && key === rosterKey()) box.innerHTML = rosterBoxHtml();
+  chartsRedraw();
+  return ok;
+}
+
+function rosterBoxHtml() {
+  const key = rosterKey();
+  const r = rosters[key];
+  const note = rosterNote[key];
+  const who = `${bname(day.building) || 'this building'}, ${formatDate(day.date)}`;
+  if (!r) {
+    return `<div class="card" style="display:grid;gap:8px;margin-bottom:6px"><div><b>Roster folder on the computer</b></div>
+      <div class="small">${note ? `No roster for ${esc(who)}: ${esc(note)}` : `Looking for the roster for ${esc(who)}…`}</div>
+      <div class="row"><button class="grow" data-act="roster-check">Check the folder again</button></div></div>`;
+  }
+  return `<div class="card" style="display:grid;gap:8px;margin-bottom:6px"><div><b>Roster folder on the computer</b></div>
+    <div class="small"><b>${esc(r.file)}</b> · ${r.n} patient${r.n === 1 ? '' : 's'} · saved ${esc(r.modified)} · pulled ${esc(chartTime(r.at))}${r.others?.length ? ` · also in the folder for this date: ${esc(r.others.join(', '))}` : ''}</div>
+    ${note ? `<div class="small muted">Using the copy on this phone. Last look: ${esc(note)}</div>` : ''}
+    <div class="row"><button class="primary grow" data-act="roster-load" ${r.n ? '' : 'disabled'}>Load this roster</button><button data-act="roster-check">Check again</button></div>
+    ${r.n ? '' : '<div class="small" style="color:var(--amber)">No patients could be read from this file. Each patient needs a "LAST, FIRST (MRN)" entry.</div>'}</div>`;
+}
+// ===== APP-11-26F  END =====
 
 // APP-11-25G (11/25/2026): each row of the Dx / Meds list keeps the height of its own text. The list was a grid with a
 // height limit, which squeezed every row to the button's minimum height, so a long diagnosis or a medication's directions
@@ -1589,12 +1792,32 @@ function toBase64(bytes) {
 
 // APP-11-11: `quiet` = a retry made without a tap (no screen change when it fails again);
 // `allowBlanks` = send even though a note still has a ___ in it.
-async function sendDay({ overwrite = false, quiet = false, allowBlanks = false } = {}) {
+// APP-11-26B: one amber box listing the pairs; nothing is changed for you.
+function clashHtml(list, who = '') {
+  if (!list.length) return '';
+  return `<div class="small clash" style="border:1px solid var(--amber);border-radius:8px;padding:6px 8px;margin:6px 0">
+    <b>Check${who ? ` ${esc(who)}` : ''}:</b>
+    ${list.map((c) => (c.b ? `<div>${esc(c.what)} - these do not fit together: "${esc(c.a)}" and "${esc(c.b)}"</div>` : `<div>${esc(c.what)}: "${esc(c.a)}"</div>`)).join('')}</div>`;
+}
+
+// `allowClashes` = send even though a note says two things that do not fit together (APP-11-26B).
+async function sendDay({ overwrite = false, quiet = false, allowBlanks = false, allowClashes = false } = {}) {
   if (view.name === 'patient') await flushNote();
   const blanks = day.patients.map((p, i) => (blankCount(p.text) ? `${i + 1}. ${p.last}, ${p.first}` : '')).filter(Boolean);
   if (blanks.length && !allowBlanks && !overwrite) {
     go({ name: 'log', blanks });
     return;
+  }
+  if (!allowClashes && !overwrite && !quiet) { // APP-11-26B: shown once before the day goes; "Send anyway" sends it as it is
+    const clashes = day.patients.map((p, i) => {
+      const st = pendingStanding(p); // APP-11-26D: carried settings nobody has confirmed today are listed too
+      const carried = st ? [{ what: `carried from ${formatDate(p.carriedSet.from)}, not confirmed today`, a: standingText(st), b: '' }] : [];
+      return { who: `${i + 1}. ${p.last}, ${p.first}`, list: [...noteClashes(p), ...carried] };
+    }).filter((x) => x.list.length);
+    if (clashes.length) {
+      go({ name: 'log', clashes });
+      return;
+    }
   }
   const send = nextSend(day);
   const { filename, content, bytes } = dayFile();
@@ -1672,8 +1895,11 @@ function renderLog() {
   app.innerHTML = `
     <div class="top">
       <button class="ghost" data-act="back">‹ List</button>
-      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : conflict ? 'File already there' : view.blanks ? 'Blanks left to fill' : 'Send log'}</h1></div>
+      <div class="grow"><h1>${fb ? 'Send didn\'t reach the computer' : conflict ? 'File already there' : view.blanks ? 'Blanks left to fill' : view.clashes ? 'Check before sending' : 'Send log'}</h1></div>
     </div>
+    ${view.clashes ? `<div class="banner" style="margin-bottom:12px;display:block"><div>${view.clashes.length} note${view.clashes.length === 1 ? ' needs' : 's need'} a look before the day goes. <b>Nothing was sent.</b></div>
+      ${view.clashes.map((x) => clashHtml(x.list, x.who)).join('')}
+      <div class="row" style="margin-top:8px"><button class="primary" data-act="back">Go back and fix them</button><button data-act="send-clashes">Send anyway</button></div></div>` : ''}
     ${view.blanks ? `<div class="banner" style="margin-bottom:12px"><div>These notes still have a ___ that was not filled in: <b>${esc(view.blanks.join('; '))}</b>. Nothing was sent.</div>
       <button class="primary" data-act="back">Go back and fill them</button><button data-act="send-blanks">Send anyway</button></div>` : ''}
     ${fb ? `<div class="banner" style="margin-bottom:12px">${esc(fb.error.startsWith('Failed') || fb.error.includes('NetworkError') ? 'The computer could not be reached. Check that Tailscale is on and the receiver is running. You can also save the Word file and put it in the building\'s Daily folder yourself.' : fb.error)}</div>
@@ -1901,6 +2127,7 @@ function renderSettings() {
       <h2>Note template</h2>
       <p class="small muted">{location} is filled by the location button, {pain} by the keypad, {vitals} by loaded vitals (left blank otherwise).</p>
       <textarea id="s-template" rows="6">${esc(s.template)}</textarea>
+      <label class="check"><input type="checkbox" id="s-standing" ${s.carryStanding !== false ? 'checked' : ''}> Carry the oxygen set-up, catheter, ostomy and PEG tube to the next day's note, for you to confirm</label>
       <label class="check"><input type="checkbox" id="s-vary" ${s.varyWording !== false ? 'checked' : ''}> Vary the wording of the routine sentences from day to day (same meaning, nothing added)</label>
 
       <h2>Location buttons</h2>
@@ -2003,6 +2230,7 @@ function readSettingsForm() {
     abxList: [...new Set(q('#s-abx').value.split('\n').map((x) => x.trim()).filter(Boolean))],
     template: q('#s-template').value,
     varyWording: q('#s-vary').checked, // APP-11-11
+    carryStanding: q('#s-standing').checked, // APP-11-26D
     locations: [...app.querySelectorAll('#s-locs .phrase-row')].map((r) => ({
       key: r.querySelector('.k').value.trim(), text: r.querySelector('.t').value.trim(), label: r.querySelector('.grp').value.trim(),
     })),
@@ -2071,6 +2299,7 @@ app.addEventListener('click', async (e) => {
         status: 'progress',
         updatedAt: Date.now(),
       });
+      applyStanding(p, last); // APP-11-26D
       await saveDay(day);
       render();
       break;
@@ -2113,6 +2342,27 @@ app.addEventListener('click', async (e) => {
       render();
       break;
     }
+    case 'del-day-empty': { // APP-11-26F: a change of plans - drop the patients not seen yet, keep every note written
+      const n = day.patients.length;
+      day.patients = day.patients.filter((x) => String(x.text || '').trim());
+      await saveDay(day);
+      toast(`Removed ${n - day.patients.length} patient${n - day.patients.length === 1 ? '' : 's'} with no note`);
+      render();
+      break;
+    }
+    case 'sort': { // APP-11-26F: put the list in this order; the numbers follow. Tap the same one again to stop keeping it sorted.
+      settings.sortBy = settings.sortBy === b.dataset.by ? '' : b.dataset.by;
+      await saveSettings(settings);
+      if (settings.sortBy) { day.patients = sortPatients(day.patients, settings.sortBy); await saveDay(day); }
+      render();
+      break;
+    }
+    case 'roster-load': { // APP-11-26F: the roster pulled from the computer's folder goes through the same review as a chosen file
+      const r = rosters[rosterKey()];
+      if (r?.text) { view.ocr = false; app.querySelector('#raw').value = r.text; showParsed(r.text); }
+      break;
+    }
+    case 'roster-check': await pullRoster(day.building, day.date, { loud: true }); break;
     case 'del-day-bld': {
       const { date, building } = day;
       await deleteDay(day);
@@ -2241,8 +2491,9 @@ app.addEventListener('click', async (e) => {
       const dupe = day.patients.findIndex((x) => x.mrn === np.mrn);
       if (dupe >= 0) { msg.textContent = `MRN ${np.mrn} is already on the list as #${dupe + 1}.`; break; }
       day.patients.push(np);
+      if (settings.sortBy) day.patients = sortPatients(day.patients, settings.sortBy); // APP-11-26F
       await saveDay(day);
-      toast(`Added ${day.patients.length}. ${np.last}, ${np.first}`);
+      toast(`Added ${np.last}, ${np.first}`);
       render();
       break;
     }
@@ -2269,6 +2520,7 @@ app.addEventListener('click', async (e) => {
       p.pain = undefined;
       p.fields = {};
       delete p.carriedFrom;
+      delete p.carriedSet; // APP-11-26D
       p.painSite = [];
       p.painType = [];
       p.painSide = '';
@@ -2316,6 +2568,21 @@ app.addEventListener('click', async (e) => {
     }
     // APP-11-11
     case 'send-blanks': history.back(); setTimeout(() => sendDay({ allowBlanks: true }), 50); break;
+    case 'standing-ok': delete p.carriedSet; p.updatedAt = Date.now(); await saveDay(day); render(); break; // APP-11-26D
+    case 'standing-drop': {
+      await flushNote();
+      p.text = stripRetapped(p.text, p).trim(); // the sentences yesterday's note carried for these settings go too
+      for (const root of ['o2', 'gu']) {
+        for (const k of p.carriedSet?.[root] || []) delete p[root]?.[k];
+        if (p[root] && !Object.keys(p[root]).length) delete p[root];
+      }
+      delete p.carriedSet;
+      p.updatedAt = Date.now();
+      await saveDay(day);
+      render();
+      break;
+    }
+    case 'send-clashes': history.back(); setTimeout(() => sendDay({ allowBlanks: true, allowClashes: true }), 50); break; // APP-11-26B
     case 'receipt-ok': lastReceipt = null; render(); break;
     case 'goto-day': {
       const b2 = b.dataset.b;
@@ -2334,7 +2601,7 @@ app.addEventListener('click', async (e) => {
     case 'install':
       if (installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); }
       break;
-    case 'retry': history.back(); setTimeout(() => sendDay({ allowBlanks: true }), 50); break;
+    case 'retry': history.back(); setTimeout(() => sendDay({ allowBlanks: true, allowClashes: true }), 50); break;
     case 'share': await shareDayFile(); break;
     case 'download': downloadDayFile(); break;
     case 'send-overwrite': history.back(); setTimeout(() => sendDay({ overwrite: true, allowBlanks: true }), 50); break;

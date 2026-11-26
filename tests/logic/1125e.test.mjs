@@ -1,0 +1,22 @@
+// Made-up data only. Pure logic of APP-11-25E ("On exam: ..." in the note text).
+import * as n from '../../app/js/note.js';
+import * as d from '../../app/js/defaults.js';
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) pass++; else { fail++; console.log('FAIL', m); } };
+const text = "Pt assessed up in chair. Pain 2/10. Pt continues to work with therapy.";
+const p1 = { text, fields: {}, exam: { Resp: 'Diminished at the bases', CV: 'RRR, no murmur' }, edema: { left: '2+', right: 'none' }, exn: { sys: ['Resp', 'Ext'] } };
+ok(n.examSentence(p1) === 'On exam: Resp diminished at the bases; Ext 2+ left lower leg edema, no right lower leg edema.', 'the sentence: ' + n.examSentence(p1));
+ok(n.fullNote(p1) === text + ' On exam: Resp diminished at the bases; Ext 2+ left lower leg edema, no right lower leg edema.', 'it goes at the end of the note text');
+ok(JSON.stringify(n.examLines(p1)) === JSON.stringify(['Exam: Resp: Diminished at the bases', 'Exam: CV: RRR, no murmur', 'Exam: Ext: 2+ left lower leg edema, no right lower leg edema']), 'the exam lines are sent exactly as before, all three');
+ok(n.examSentence({ exam: { CV: 'RRR, no murmur', General: 'NAD, alert' }, exn: { sys: ['General', 'CV'] } }) === 'On exam: General NAD, alert; CV RRR, no murmur.', 'abbreviations keep their capitals; body-system order');
+ok(n.examSentence({ exam: { Resp: 'Clear' }, exn: { sys: ['Ext', 'Skin'] } }) === '' && n.examSentence({ exam: { Resp: 'Clear' } }) === '', 'a ticked system with no finding, or no tick, writes nothing');
+ok(n.examSentence({ exam: { Skin: 'Warm, dry, intact' }, incision: { side: 'right', site: 'hip', state: 'intact' }, exn: { sys: ['Skin'] } }) === 'On exam: Skin warm, dry, intact; surgical incision to right hip dry and intact.', 'Skin with an incision: ' + n.examSentence({ exam: { Skin: 'Warm, dry, intact' }, incision: { side: 'right', site: 'hip', state: 'intact' }, exn: { sys: ['Skin'] } }));
+const p2 = { text, fields: { labs: 'Labs reviewed' }, exam: { Resp: 'Bibasilar crackles' }, exn: { sys: ['Resp'] }, incision: { act: 'Assessed incision', site: 'knee', side: 'left' }, ordered: { tests: ['CXR'] } };
+ok(n.fullNote(p2) === text + ' On exam: Resp bibasilar crackles. Assessed incision to left knee. Labs reviewed. Ordered CXR.', 'order at the end: on exam, incision, labs, ordered');
+const cf = n.carryForward(n.fullNote(p2), null, d.DEFAULT_SETTINGS).trim();
+ok(cf === text + ' Labs reviewed.', 'the "On exam" sentence is not carried into the next day: ' + cf.slice(-40));
+const cf2 = n.carryForward(n.fullNote({ text, fields: {}, exam: { Ext: 'Wound 2.5 cm' }, exn: { sys: ['Ext'] } }) + ' Seen with nurse.', null, d.DEFAULT_SETTINGS).trim();
+ok(cf2 === text + ' Seen with nurse.', 'a decimal in the finding does not stop it being taken out');
+ok(n.fullNote({ text, fields: {}, exam: { Resp: 'Clear' } }) === text, 'no tick = the note text is unchanged');
+console.log(`logic 11-25E: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

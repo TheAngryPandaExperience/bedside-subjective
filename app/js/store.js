@@ -87,6 +87,18 @@ export function saveCharts(charts) {
   return tx('kv', 'readwrite', (s) => s.put(charts, 'charts'));
 }
 
+// APP-11-26F: the day's roster as pulled from the computer's roster folder:
+// { "<date>|<building id>": { file, modified, at, text, n } }. Entries more than a week old are dropped on save.
+export async function getRosters() {
+  return (await tx('kv', 'readonly', (s) => s.get('rosters'))) || {};
+}
+
+export function saveRosters(rosters) {
+  const cut = new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10);
+  const kept = Object.fromEntries(Object.entries(rosters).filter(([k]) => k.split('|')[0] >= cut));
+  return tx('kv', 'readwrite', (s) => s.put(kept, 'rosters'));
+}
+
 // APP-11-24: the time clock. { "<date>|<building id>": [{ in: "HH:MM", out: "HH:MM" or "" }] }.
 // Kept apart from the days so a day cleared after it was sent does not take its times with it.
 export async function getClock() {

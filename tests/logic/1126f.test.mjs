@@ -1,0 +1,21 @@
+// Made-up data only. APP-11-26F: the room in the list, and the order of the list.
+import * as n from '../../app/js/note.js';
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) pass++; else { fail++; console.log('FAIL', m); } };
+const P = (last, first, mrn, room) => ({ last, first, mrn, room, text: '', fields: {} });
+ok(JSON.stringify(n.roomParts('Pod A 202 - 1')) === '{"unit":"Pod A","room":"202","bed":"1"}', 'PCC "Pod A 202 - 1" is unit, room, bed');
+ok(n.roomTag(P('a', 'b', '1', 'Pod A 202 - 1')) === '[202-1]' && n.roomTag(P('a', 'b', '1', 'Room: 14')) === '[14]' && n.roomTag(P('a', 'b', '1', '')) === '[ ]' && n.roomTag(P('a', 'b', '1', 'Unit 3 118-B')) === '[118-B]', 'the bracket is room and bed; room only; empty');
+ok(n.listLabel(P('Mouse', 'Mickey', '7961', 'Pod B 210 - 1'), 0) === '1. [210-1] Mouse, Mickey (7961):', 'on the phone: ' + n.listLabel(P('Mouse', 'Mickey', '7961', 'Pod B 210 - 1'), 0));
+ok(n.patientLabel(P('Mouse', 'Mickey', '7961', 'Pod B 210 - 1'), 0) === '1. Mouse, Mickey (7961):', 'the label used in the sent file is unchanged');
+const day = { date: '2026-11-26', building: 'Test Hall', patients: [{ ...P('Mouse', 'Mickey', '7961', 'Pod B 210 - 1'), text: 'Pt seen.' }], sends: [] };
+const lines = n.summaryLines(day);
+ok(lines.some((l) => l.startsWith('MOUSE, MICKEY (7961):') || l.startsWith('1. Mouse, Mickey (7961):') || /Mouse, Mickey \(7961\)/i.test(l)) && !lines.some((l) => l.includes('[210-1]')), 'the daily summary has the patient with no room bracket: ' + JSON.stringify(lines.slice(-2)));
+const list = [P('Mouse', 'Mickey', '7961', 'Pod B 210 - 1'), P('Duck', 'Daisy', '8104', 'Pod A 203 - 2'), P('Flintstone', 'Fred', '8101', 'Pod A 202 - 1'), P('Jetson', 'Jane', '8080', ''), P('Boop', 'Betty', '8096', 'Pod A 202 - 2'), P('Duck', 'Donald', '8094', 'Pod B 9 - 1')];
+const names = (by) => n.sortPatients(list, by).map((p) => `${p.last} ${p.first[0]}`).join(', ');
+ok(names('name') === 'Boop B, Duck D, Duck D, Flintstone F, Jetson J, Mouse M' && n.sortPatients(list, 'name')[1].first === 'Daisy', 'by last name, then first name: ' + names('name'));
+ok(names('room') === 'Duck D, Flintstone F, Boop B, Duck D, Mouse M, Jetson J', 'by room number as a number (9 before 202), then bed, no room last: ' + names('room'));
+ok(names('unit') === 'Flintstone F, Boop B, Duck D, Duck D, Mouse M, Jetson J', 'by unit, then room and bed: ' + names('unit'));
+ok(names('') === 'Mouse M, Duck D, Flintstone F, Jetson J, Boop B, Duck D' && list[0].last === 'Mouse', 'no order picked: as it is; the list itself is not changed by sorting a copy');
+ok(n.sortPatients(list, 'room').length === list.length && new Set(n.sortPatients(list, 'unit').map((p) => p.mrn)).size === 6, 'sorting never drops or doubles a patient');
+console.log(`logic 11-26F: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

@@ -32,6 +32,68 @@ export function normalizeMrn(token) {
   return /^\d{3,10}$/.test(out) ? out : null;
 }
 
+// ===== APP-11-26A  START: an MRN read through a look-alike is never accepted silently =====
+/**
+ * One MRN token as OCR read it: { mrn: the digits, repaired: true when a letter or symbol had to be read as a digit,
+ * raw: the token as read }. mrn is null when it does not look like an MRN at all.
+ */
+export function readMrn(token) {
+  const raw = String(token ?? '').trim();
+  const mrn = normalizeMrn(raw);
+  return { mrn, repaired: !!mrn && !/^\d+$/.test(raw), raw };
+}
+
+const nameKey = (t) => String(t ?? '').toUpperCase().replace(/[^A-Z]/g, '');
+
+/**
+ * Check roster rows against a second source: the building's chart from the computer (its patients' names and MRNs).
+ * Nothing is corrected from a guess. Each row gets:
+ *   chart: 'match'  - this name and MRN are a patient in the chart (confirmed)
+ *          'new'    - neither the name nor the MRN is in the chart
+ *          'mrn'    - the name is in the chart with a different MRN
+ *          'name'   - the MRN is in the chart under a different name
+ *   and, for everything but 'match', a flag saying what was found.
+ * A row whose photo gave two different MRNs is settled only when exactly one of the two is that same patient in the
+ * chart - then that reading is used and the row says so.
+ */
+export function checkRoster(rows, chartPatients) {
+  const list = (chartPatients || []).map((c) => {
+    const [last, first = ''] = String(c.name ?? '').split(',');
+    return { mrn: String(c.mrn ?? '').trim(), last: nameKey(last), first: nameKey(first.trim().split(/\s+/)[0]), shown: String(c.name ?? '').trim() };
+  });
+  const same = (c, r) => c.last === nameKey(r.last) && !!c.first && !!nameKey(r.first)
+    && (c.first.startsWith(nameKey(r.first)) || nameKey(r.first).startsWith(c.first));
+  return rows.map((r) => {
+    const out = { ...r };
+    const byName = list.filter((c) => same(c, r));
+    const settled = (r.alts || []).filter((m) => byName.some((c) => c.mrn === m));
+    if (r.alts && r.alts.length === 2 && r.alts[0] !== r.alts[1] && settled.length === 1) {
+      out.mrn = settled[0];
+      out.chart = 'match';
+      out.flag = '';
+      out.note = `the chart confirms ${settled[0]} (the photo also read ${r.alts.find((m) => m !== settled[0])})`;
+      return out;
+    }
+    const byMrn = out.mrn ? list.filter((c) => c.mrn === out.mrn) : [];
+    if (byMrn.some((c) => same(c, r))) {
+      out.chart = 'match';
+      out.flag = '';
+      out.note = r.flag ? 'confirmed by the chart' : '';
+    } else if (byMrn.length) {
+      out.chart = 'name';
+      out.flag = `MRN ${out.mrn} is ${byMrn[0].shown} in the chart - check the name and the MRN against the paper`;
+    } else if (byName.length) {
+      out.chart = 'mrn';
+      out.flag = `the chart has MRN ${byName.map((c) => c.mrn).join(' or ')} for ${byName[0].shown}; this list reads ${out.mrn || 'no MRN'}${r.flag ? ` (${r.flag})` : ''}`;
+    } else {
+      out.chart = 'new';
+      out.flag = r.flag ? `${r.flag}; not in the chart either` : 'not in the chart - a new patient? check the name and MRN against the paper';
+    }
+    return out;
+  });
+}
+// ===== APP-11-26A  END =====
+
 function titleCase(word) {
   if (word !== word.toUpperCase()) return word;
   return word.toLowerCase().replace(/(^|[\s\-'’])([a-z])/g, (m, p, c) => p + c.toUpperCase());
@@ -41,13 +103,13 @@ function cleanName(w) {
   return titleCase(w.replace(/[^A-Za-z'’\-. ]/g, '').trim());
 }
 
-/** The MRN column at the end of a roster row, scanning back until a date. */
+/** The MRN column at the end of a roster row, scanning back until a date. APP-11-26A: returns readMrn's record. */
 function trailingMrn(rest) {
   const tokens = rest.trim().split(/\s+/).reverse();
   for (const t of tokens) {
     if (DATE_TOKEN.test(t)) return null;
-    const n = normalizeMrn(t);
-    if (n) return n;
+    const n = readMrn(t);
+    if (n.mrn) return n;
     if (t.length >= 3 && /\d/.test(t)) return null; // garbled number: give up rather than guess
   }
   return null;
@@ -71,11 +133,13 @@ export function parseRoster(text) {
     const m = line.match(ROSTER_ROW);
     if (!m) continue;
     const rest = line.slice(m.index + m[0].length);
-    const paren = normalizeMrn(m[4]);
-    const column = trailingMrn(rest);
+    const pRead = readMrn(m[4]); // APP-11-26A: keep how each MRN was read, not only its digits
+    const cRead = trailingMrn(rest);
+    const paren = pRead.mrn;
+    const column = cRead ? cRead.mrn : null;
     // Without a comma or any MRN this is probably header noise, not a patient.
     if (!m[2] && !paren && !column) continue;
-    rows.push({ last: cleanName(m[1]), first: cleanName(m[3]), paren, column, room: roomFrom(rest) });
+    rows.push({ last: cleanName(m[1]), first: cleanName(m[3]), paren, column, pRead, cRead, room: roomFrom(rest) });
   }
 
   // Typical MRN length, from rows where both readings agree.
@@ -87,9 +151,14 @@ export function parseRoster(text) {
   for (const r of rows) {
     let mrn = null;
     let flag = '';
+    // APP-11-26A: a reading that needed a look-alike swapped for a digit ("8O94" -> 8094) stands only when the other
+    // reading of the same row is plain digits and says the same; otherwise the row is flagged with what was read.
+    const unclear = (x) => (x && x.repaired ? `"${x.raw}"` : '');
     if (r.paren && r.column) {
-      if (r.paren === r.column) mrn = r.paren;
-      else {
+      if (r.paren === r.column) {
+        mrn = r.paren;
+        if (r.pRead.repaired && r.cRead.repaired) flag = `MRN had an unclear character in both places (read ${unclear(r.pRead)} and ${unclear(r.cRead)} as ${mrn})`;
+      } else {
         const pOk = !typical || r.paren.length === typical;
         const cOk = !typical || r.column.length === typical;
         mrn = cOk || !pOk ? r.column : r.paren;
@@ -97,13 +166,15 @@ export function parseRoster(text) {
       }
     } else {
       mrn = r.paren || r.column;
+      const one = r.paren ? r.pRead : r.cRead;
       if (!mrn) flag = 'MRN not found';
+      else if (one && one.repaired) flag = `MRN had an unclear character (read ${unclear(one)} as ${mrn})`;
       else if (typical && mrn.length !== typical) flag = 'MRN length looks wrong';
     }
     const key = mrn || `${r.last},${r.first}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ last: r.last, first: r.first, mrn: mrn || '', room: r.room, flag });
+    out.push({ last: r.last, first: r.first, mrn: mrn || '', room: r.room, flag, alts: [r.paren, r.column].filter(Boolean) });
   }
   return out;
 }

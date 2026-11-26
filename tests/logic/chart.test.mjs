@@ -1,0 +1,24 @@
+// Made-up patients only. Logic for the Dx / Meds lines (APP-11-22-CHART).  Run from the app folder: node t_chart.mjs
+const n = await import('../../app/js/' + 'note.js');
+const d = await import('../../app/js/' + 'defaults.js');
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) pass++; else { fail++; console.log('FAIL', m); } };
+const p = { last: 'Mouse', first: 'Mickey', mrn: '9001', text: 'Pt assessed at bedside. No complaints.', fields: {} };
+ok(n.tapLines(p).length === 0, 'nothing tapped: no lines');
+ok(n.noteHash(p) === n.noteHash({ ...p, tapDx: [], tapMeds: [] }), 'a note with nothing tapped hashes as before');
+const t = { ...p, tapDx: ['Type 2 diabetes', '  Hypertension,  benign '], tapMeds: ['Apixaban Oral Tablet 5 MG'] };
+ok(JSON.stringify(n.tapLines(t)) === JSON.stringify(['Dx: Type 2 diabetes', 'Dx: Hypertension, benign', 'Med: Apixaban Oral Tablet 5 MG']), 'one line per item, diagnoses then medications, in the order tapped');
+ok(n.noteHash(t) !== n.noteHash(p), 'tapped items change the hash');
+ok(n.fullNote(t) === n.fullNote(p), 'tapped items never enter the note text');
+const day = { date: '2026-11-22', building: 'Test Hall', patients: [{ ...t, exam: { Resp: 'clear' } }, { last: 'Duck', first: 'Donald', mrn: '9002', text: '' }] };
+const L = n.summaryLines(day);
+ok(L[4] === 'Exam: Resp: clear' && L[5] === 'Dx: Type 2 diabetes' && L[7] === 'Med: Apixaban Oral Tablet 5 MG' && L[8] === 'DUCK, DONALD (9002): New pt', 'in the daily summary: patient line, exam lines, Dx lines, Med lines, next patient');
+const keys = d.DETAILS.map((x) => x.key);
+ok(keys.includes('dx') && keys.includes('meds'), 'Dx and Meds are on the detail bar');
+const chart = { patients: [{ mrn: '9001', name: 'MOUSE, MICKEY', dx: ['A'] }, { mrn: '', name: 'DUCK, DONALD', dx: ['B'] }, { mrn: '9009', name: 'GOOF, GOOFY', dx: ['C'] }] };
+ok(n.chartEntry(chart, p)?.dx[0] === 'A', 'a patient is matched by MRN');
+ok(n.chartEntry(chart, { last: 'Mouse', first: 'Minnie', mrn: '9001' })?.dx[0] === 'A', 'the MRN decides, not the name');
+ok(n.chartEntry(chart, { last: 'Duck', first: 'Donald', mrn: '9002' })?.dx[0] === 'B', 'an entry with no MRN is matched by exact name');
+ok(n.chartEntry(chart, { last: 'Goof', first: 'Goofy', mrn: '9003' }) === null, 'same name but a different MRN: not matched');
+ok(n.chartEntry(null, p) === null && n.chartEntry({}, p) === null, 'no chart: no entry');
+console.log(`logic chart: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

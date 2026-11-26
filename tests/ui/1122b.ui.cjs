@@ -1,0 +1,41 @@
+// Made-up patients only. Edit name button (APP-11-22).
+const { chromium, devices } = require('playwright');
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('FAIL', m); } };
+(async () => {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ ...devices['Pixel 7'], serviceWorkers: 'block' });
+  const page = await ctx.newPage();
+  const errors = []; page.on('pageerror', (e) => errors.push(String(e)));
+  await page.goto('http://127.0.0.1:8765/index.html'); await page.waitForSelector('[data-act="add-building"]');
+  await page.click('[data-act="add-building"]'); await page.fill('#new-building', 'Test Hall'); await page.click('[data-act="save-building"]'); await page.waitForTimeout(400);
+  await page.fill('#date', '2026-11-22'); await page.dispatchEvent('#date', 'change'); await page.waitForTimeout(200);
+  const addPt = async (l, f, m) => { await page.click('[data-act="add-pt"]'); await page.fill('#ap-last', l); await page.fill('#ap-first', f); await page.fill('#ap-mrn', m); await page.click('[data-act="add-pt-save"]'); await page.waitForTimeout(300); };
+  await addPt('Mouze', 'Mickey', '9001'); await addPt('Duck', 'Donald', '9002');
+  await page.click('[data-act="open"]'); await page.waitForSelector('[data-act="loc"]');
+  ok(await page.isVisible('[data-act="edit-pt"]'), 'Edit name shows as soon as a patient is chosen (before the first step)');
+  ok(await page.isHidden('#edit-pt-form'), 'the form is closed until tapped');
+  await page.click('[data-act="loc"]'); await page.click('[data-act="pain-pick"][data-v="2"]'); await page.click('button.primary[data-act="pain"]'); await page.waitForSelector('#note');
+  await page.fill('#note', (await page.inputValue('#note')) + 'Pt c/o cough.'); await page.waitForTimeout(100);
+  await page.click('[data-act="edit-pt"]'); await page.waitForSelector('#ep-last', { state: 'visible' });
+  ok((await page.inputValue('#ep-last')) === 'Mouze' && (await page.inputValue('#ep-first')) === 'Mickey' && (await page.inputValue('#ep-mrn')) === '9001', 'the form opens with the current name and MRN');
+  await page.screenshot({ path: require('os').tmpdir() + '/shot_editname.png' });
+  await page.fill('#ep-mrn', '9002'); await page.click('[data-act="edit-pt-save"]'); await page.waitForTimeout(200);
+  ok((await page.textContent('#ep-msg')).includes('MRN 9002 is already on the list as #2'), 'an MRN that belongs to another patient is refused');
+  await page.fill('#ep-last', ''); await page.click('[data-act="edit-pt-save"]'); await page.waitForTimeout(200);
+  ok((await page.textContent('#ep-msg')).includes('Last name and MRN are needed'), 'a blank last name is refused');
+  await page.fill('#ep-last', 'Mouse'); await page.fill('#ep-mrn', '9007'); await page.click('[data-act="edit-pt-save"]'); await page.waitForTimeout(400);
+  ok((await page.textContent('h1')).includes('1. [ ] Mouse, Mickey (9007):'), 'the heading shows the corrected name and MRN: ' + await page.textContent('h1'));
+  ok((await page.inputValue('#note')).includes('Pt c/o cough.'), 'the note, with what was just typed, is kept');
+  const lines = await page.evaluate(async () => {
+    const n = await import('./js/note.js'); const s = await import('./js/store.js');
+    const b = (await s.getSettings()).currentBuilding; const day = await s.getDay('2026-11-22', b);
+    return n.summaryLines({ ...day, building: 'Test Hall' });
+  });
+  ok(lines[3].startsWith('MOUSE, MICKEY (9007): ') && lines[3].includes('Pt c/o cough.') && lines[4].startsWith('DUCK, DONALD (9002):'), 'the daily summary uses the corrected name and MRN: ' + lines[3].slice(0, 40));
+  await page.click('[data-act="edit-pt"]'); await page.click('[data-act="edit-pt-cancel"]');
+  ok(await page.isHidden('#edit-pt-form'), 'Cancel closes the form');
+  ok(errors.length === 0, 'no page errors: ' + errors.join(' | '));
+  console.log(`ui edit name: ${pass} passed, ${fail} failed`);
+  await browser.close(); process.exit(fail ? 1 : 0);
+})().catch((e) => { console.log('CRASH', e.message.slice(0, 600)); process.exit(2); });

@@ -1,19 +1,19 @@
 {
   "name": "bedside-app",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Bedside Subjective - phone app for the daily subjective narrative",
+  "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node tests/run-all.mjs",
+    "test:quick": "node tests/run-all.mjs --no-ui"
+  },
+  "license": "ISC",
   "devDependencies": {
     "@tesseract.js-data/eng": "^1.0.0",
     "mammoth": "^1.12.3",
     "pdfjs-dist": "^5.7.284",
+    "playwright": "^1.50.0",
     "tesseract.js": "^7.0.0"
   }
 }
