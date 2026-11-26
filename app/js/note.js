@@ -1,7 +1,7 @@
 // Pure note logic: template filling, shortcut expansion, daily summary and send log.
 
 import { formatVitals } from './parsers.js';
-import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS, EXAM_SYSTEMS, GU_SYMPTOMS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_TEXT, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS } from './defaults.js';
+import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS, EXAM_SYSTEMS, GU_SYMPTOMS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_TEXT, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS, INCISION_SIDES, INCISION_SITES, INCISION_STATES, INCISION_ACTS, EDEMA_GRADES, EDEMA_KINDS } from './defaults.js';
 
 const joinAnd = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
 
@@ -85,7 +85,7 @@ function detailMap(p) {
       continue;
     }
     if (d.key === 'ordered') { const s = orderedSentence(p); if (s) out.ordered = s; continue; } // APP-11-25B
-    if (d.key === 'exam') continue; // APP-11-20: exam findings go out as their own lines (examLines), never in the note text
+    if (d.key === 'exam') { const x = examSentence(p); if (x) out.onexam = x; const s = incisionSubjective(p); if (s) out.incision = s; continue; } // APP-11-25E: "On exam: ..." for the ticked systems // APP-11-20: exam findings go out as their own lines; APP-11-25C: "Visualized incision ..." is note text: exam findings go out as their own lines (examLines), never in the note text
     if (d.key === 'dx' || d.key === 'meds') continue; // APP-11-22-CHART: tapped items go out as their own lines (tapLines)
     let v = String(f[d.key] ?? '').trim();
     if (!v) continue;
@@ -138,7 +138,7 @@ export function fullNote(p) {
   place(['therapy'], /\b(?:continues to work with|continues with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
   place(['o2'], /\bbreathing complications[^.]*\./i); // APP-11-25: the O2 sentences follow the breathing sentence
   place(['bm', 'gu'], /\bconstipation[^.]*\./i); // APP-11-20: the BM sentence follows the constipation sentence (APP-11-25: then urinary / catheter / ostomy)
-  for (const k of ['pain', 'labs', 'ordered', 'said']) if (d[k]) tail.push(d[k]); // APP-11-22: labs sentence at the end; APP-11-25B: then what was ordered
+  for (const k of ['pain', 'onexam', 'incision', 'labs', 'ordered', 'said']) if (d[k]) tail.push(d[k]); // APP-11-22: labs sentence at the end; APP-11-25B: then what was ordered
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
 }
@@ -151,7 +151,9 @@ export function carryForward(lastNote, todayVitals, settings) {
   const vit = formatVitals(todayVitals, settings);
   // APP-11-20: yesterday's "Last BM ..." sentence is about that day, so it is not carried into today's note
   // APP-11-25B: yesterday's "Ordered ..." sentence is about that day too
-  const kept = stripAbx(String(lastNote)).replace(/\s*\bLast BM [^.]*\./g, '').replace(/(^|[.!?"])\s*Ordered [^.]*\./g, '$1');
+  const kept = stripAbx(String(lastNote)).replace(/\s*\bLast BM [^.]*\./g, '').replace(/(^|[.!?"])\s*Ordered [^.]*\./g, '$1')
+    .replace(new RegExp(`(^|[.!?"])\\s*(?:${INCISION_ACTS.join('|')})[^.]*\\.`, 'g'), '$1') // APP-11-25C: so is "Visualized incision ..."
+    .replace(/(^|[.!?"])\s*On exam: .*?\.(?=\s|$)/g, '$1'); // APP-11-25E: and "On exam: ..."
   return kept.trim().replace(/Vital signs:.*?(?=\b(?:pt\s+)?denies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
 }
 
@@ -193,9 +195,74 @@ export function parseBmDate(text, dos) {
 /** The filled-in exam systems as lines for the daily summary: ["Exam: Resp: Bibasilar crackles", ...]. */
 export function examLines(p) {
   const e = p.exam || {};
-  return EXAM_SYSTEMS.map((s) => [s.key, String(e[s.key] ?? '').replace(/\s+/g, ' ').trim()])
-    .filter(([, v]) => v).map(([k, v]) => `Exam: ${k}: ${v}`);
+  const inc = incisionExam(p); // APP-11-25C: the incision finding is part of the Skin line
+  return EXAM_SYSTEMS.map((s) => {
+    let v = String(e[s.key] ?? '').replace(/\s+/g, ' ').trim();
+    if (s.key === 'Skin' && inc) v = v ? `${v.replace(/[.\s]+$/, '')}. ${inc}` : inc;
+    const ed = s.key === 'Ext' ? edemaExam(p) : ''; // APP-11-25D: edema by leg is part of the Ext line
+    if (ed) v = v ? `${v.replace(/[.\s]+$/, '')}. ${ed}` : ed;
+    return [s.key, v];
+  }).filter(([, v]) => v).map(([k, v]) => `Exam: ${k}: ${v}`);
 }
+
+// ===== APP-11-25E  START: exam findings put in the note text =====
+/**
+ * "On exam: Resp diminished at the bases; Ext 2+ left lower leg edema, no right lower leg edema." - one sentence for
+ * the body systems ticked "Put in note" (p.exn.sys), each with exactly the finding that goes to the exam section.
+ * A system that is ticked but has no finding is left out. A capitalised ordinary first word is lowercased ("Diminished"
+ * -> "diminished"); abbreviations (NAD, RRR) and everything else are left as they are.
+ */
+export function examSentence(p) {
+  const want = p.exn?.sys || [];
+  if (!want.length) return '';
+  const lower = (t) => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
+  const parts = examLines(p).map((ln) => ln.match(/^Exam: ([^:]+): (.*)$/)).filter((m) => m && want.includes(m[1]))
+    .map((m) => `${m[1]} ${m[2].replace(/[.\s]+$/, '').split(/\.\s+/).map(lower).join('; ')}`);
+  return parts.length ? `On exam: ${parts.join('; ')}.` : '';
+}
+// ===== APP-11-25E  END =====
+
+// ===== APP-11-25D  START: edema for each leg =====
+/**
+ * The Ext finding from p.edema = { left, right, kind }: "2+ left lower leg edema, no right lower leg edema";
+ * both legs the same: "2+ bilateral lower leg edema" / "No lower leg edema"; one leg picked: that leg only.
+ * kind (pitting / non-pitting) is written on every leg that has edema: "2+ pitting left lower leg edema".
+ */
+export function edemaExam(p) {
+  const e = p.edema || {};
+  const L = EDEMA_GRADES.includes(e.left) ? e.left : '';
+  const R = EDEMA_GRADES.includes(e.right) ? e.right : '';
+  const kind = EDEMA_KINDS.includes(e.kind) ? `${e.kind} ` : '';
+  const one = (g, where) => (g === 'none' ? `no ${where} lower leg edema` : `${g} ${kind}${where} lower leg edema`);
+  const cap1 = (t) => t[0].toUpperCase() + t.slice(1);
+  if (!L && !R) return '';
+  if (L && R && L === R) return L === 'none' ? 'No lower leg edema' : cap1(one(L, 'bilateral'));
+  return cap1([L ? one(L, 'left') : '', R ? one(R, 'right') : ''].filter(Boolean).join(', '));
+}
+// ===== APP-11-25D  END =====
+
+// ===== APP-11-25C  START: surgical incision =====
+/** " to right hip" from p.incision = { side, site, siteOther }; '' when no site is given. */
+export function incisionWhere(p) {
+  const c = p.incision || {};
+  const typed = String(c.siteOther ?? '').replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  const site = typed || (INCISION_SITES.includes(c.site) ? c.site : '');
+  if (!site) return '';
+  return ` to ${INCISION_SIDES.includes(c.side) ? `${c.side} ` : ''}${site}`;
+}
+
+/** The exam finding: "Surgical incision to right hip dry and intact." / "Surgical site to right hip covered with dressing." */
+export function incisionExam(p) {
+  const st = INCISION_STATES.find(([k]) => k === p.incision?.state);
+  return st ? `${st[2].replace('{at}', incisionWhere(p))}.` : '';
+}
+
+/** The note-text sentence: "Visualized incision to right hip." / "Assessed incision to right hip." */
+export function incisionSubjective(p) {
+  const act = p.incision?.act;
+  return INCISION_ACTS.includes(act) ? `${act}${incisionWhere(p)}.` : '';
+}
+// ===== APP-11-25C  END =====
 // ===== APP-11-20  END =====
 
 // ===== APP-11-25  START: O2, urinary, catheter and ostomy sentences =====

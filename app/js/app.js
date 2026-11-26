@@ -2,11 +2,11 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, incisionExam, incisionSubjective, edemaExam, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
 import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getClock, saveClock } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
-import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS, O2_LITERS, GU_SYMPTOMS, CATHETERS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS, O2_LITERS, GU_SYMPTOMS, CATHETERS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS, INCISION_SIDES, INCISION_SITES, INCISION_STATES, INCISION_ACTS, EDEMA_GRADES, EDEMA_KINDS, EDEMA_PRESET_RE } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
 // 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
 // more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
 // never part of the daily summary that goes to the notes.
-const APP_VERSION = 21;
+const APP_VERSION = 24;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -646,7 +646,7 @@ function mountDetails(p, openKey) {
   const filled = (d) => (d.key === 'pain' ? p.pain != null : d.key === 'abx' ? activeAbx(p.mrn, day.date).length > 0
     : d.key === 'o2' ? !!o2Sentence(p) // APP-11-25
     : d.key === 'ordered' ? orderedItems(p).length > 0 // APP-11-25B
-    : d.key === 'bm' ? !!(p.bm?.date || guSentence(p)) : d.key === 'exam' ? examLines(p).length > 0 // APP-11-20
+    : d.key === 'bm' ? !!(p.bm?.date || guSentence(p)) : d.key === 'exam' ? (examLines(p).length > 0 || !!incisionSubjective(p)) // APP-11-20; APP-11-25C
       : d.key === 'dx' ? (p.tapDx || []).length > 0 : d.key === 'meds' ? (p.tapMeds || []).length > 0 // APP-11-22-CHART
       : String(p.fields[d.key] ?? '').trim() !== '');
   const filledAbx = () => activeAbx(p.mrn, day.date).length;
@@ -732,6 +732,11 @@ function mountDetails(p, openKey) {
       if (t.value.trim()) { p.o2.liters = t.value.trim(); delete p.o2.room; } else delete p.o2.liters;
       const hint = box.querySelector('#o2hint');
       if (hint) hint.textContent = t.value.trim() && !o2Liters(t.value) ? 'Type the liters as a number, for example 2 or 2.5.' : o2Sentence(p);
+    } else if (t.id === 'incother') { // APP-11-25C: the incision's site, typed
+      p.incision ??= {};
+      if (t.value.trim()) { p.incision.siteOther = t.value; delete p.incision.site; } else delete p.incision.siteOther;
+      const hint = box.querySelector('#inchint');
+      if (hint) hint.textContent = [incisionExam(p), incisionSubjective(p)].filter(Boolean).join(' ');
     } else if (t.id === 'ordus' || t.id === 'ordother') { // APP-11-25B: an ultrasound area or another order, typed
       p.ordered ??= {};
       const k = t.id === 'ordus' ? 'usOther' : 'other';
@@ -762,7 +767,7 @@ function mountDetails(p, openKey) {
       else if (open === 'o2') delete p.o2; // APP-11-25
       else if (open === 'ordered') delete p.ordered; // APP-11-25B
       else if (open === 'bm') { delete p.bm; delete p.gu; } // APP-11-20; APP-11-25
-      else if (open === 'exam') delete p.exam;
+      else if (open === 'exam') { delete p.exam; delete p.incision; delete p.edema; delete p.exn; } // APP-11-25C, APP-11-25D, APP-11-25E: the incision is part of the exam
       else if (open === 'dx') delete p.tapDx; // APP-11-22-CHART
       else if (open === 'meds') delete p.tapMeds;
       else delete p.fields[open];
@@ -837,6 +842,7 @@ function mountDetails(p, openKey) {
     } else if (b.dataset.exsys) { // APP-11-20: tap an exam finding to use it, tap it again to clear it
       p.exam ??= {};
       if (p.exam[b.dataset.exsys] === b.dataset.exv) delete p.exam[b.dataset.exsys]; else p.exam[b.dataset.exsys] = b.dataset.exv;
+      if (b.dataset.exsys === 'Ext' && EDEMA_PRESET_RE.test(p.exam.Ext || '')) delete p.edema; // APP-11-25D: an edema choice replaces the by-leg grades
       await save();
     } else if (b.dataset.dv != null) {
       if (open === 'pain') setPain(p, +b.dataset.dv);
@@ -954,6 +960,15 @@ function tidyPicks(p, what) {
   }
   const r = p.ordered;
   if (r && Object.keys(r).length === 0) delete p.ordered;
+  const ed = p.edema; // APP-11-25D: a grade by leg replaces an edema choice picked above it; the kind needs a leg with edema
+  if (ed) {
+    if ((what === 'edema.left' || what === 'edema.right') && (ed.left || ed.right) && EDEMA_PRESET_RE.test(p.exam?.Ext || '')) delete p.exam.Ext;
+    if (![ed.left, ed.right].some((g) => g && g !== 'none')) delete ed.kind;
+    if (Object.keys(ed).length === 0) delete p.edema;
+  }
+  if (p.exn && !(p.exn.sys || []).length) delete p.exn; // APP-11-25E
+  const c = p.incision; // APP-11-25C: a tapped site replaces a typed one
+  if (c) { if (what === 'incision.site' && c.site) delete c.siteOther; if (Object.keys(c).length === 0) delete p.incision; }
 }
 
 // Ordered: labs and tests ordered today -> "Ordered CBC, BMP and CXR." at the end of the note.
@@ -979,13 +994,52 @@ function orderedPanel(p) {
 // Exam: one box per body system. Only the systems filled in are sent, as "Exam: Resp: ..." lines under the patient.
 function examPanel(p) {
   const e = p.exam || {};
-  return `<div class="small muted">Fill in only what you examined or what changed. The rest of the note's exam is left as it is.</div>
+  return `<div class="small muted">Fill in only what you examined or what changed. The rest of the note's exam is left as it is. "Put in note" also writes that system's finding in the note text, as "On exam: ...".</div>
     ${EXAM_SYSTEMS.map((s) => `<div>
-      <div class="small" style="font-weight:700;margin:4px 0">${esc(s.key)}</div>
+      <div class="row" style="align-items:center;margin:4px 0"><div class="small grow" style="font-weight:700">${esc(s.key)}</div>
+        ${pk('exn.sys', s.key, 'Put in note', (p.exn?.sys || []).includes(s.key), 'data-kind="multi" style="min-height:36px;padding:4px 10px"')}</div>
       ${s.presets.map((q) => `<button class="dpreset ${e[s.key] === q ? 'on' : ''}" data-exsys="${esc(s.key)}" data-exv="${esc(q)}" style="margin:0 6px 6px 0">${esc(q)}</button>`).join('')}
       <input data-exinput="${esc(s.key)}" value="${esc(e[s.key] ?? '')}" placeholder="Type or edit ${esc(s.key)}…" autocomplete="off" style="width:100%">
+      ${s.key === 'Skin' ? incisionPanel(p) : ''}${s.key === 'Ext' ? edemaPanel(p) : ''}
     </div>`).join('')}`;
 }
+
+// ===== APP-11-25D  START: edema for each leg, under Ext =====
+function edemaPanel(p) {
+  const e = p.edema || {};
+  const any = [e.left, e.right].some((g) => g && g !== 'none');
+  const row = (side) => `<div class="small muted">${cap(side)} leg</div>
+    <div class="row">${EDEMA_GRADES.map((g) => pk(`edema.${side}`, g, cap(g), e[side] === g)).join('')}</div>`;
+  return `<div style="border:1px solid var(--line, #d8dde6);border-radius:10px;padding:8px;margin-top:8px">
+    <div class="small" style="font-weight:700">Edema by leg</div>
+    ${row('left')}${row('right')}
+    <div class="small muted">Kind (optional)</div>
+    <div class="row">${EDEMA_KINDS.map((k) => pk('edema.kind', k, cap(k), e.kind === k, any ? '' : 'disabled')).join('')}</div>
+    <div class="small" id="edhint">${esc(edemaExam(p))}</div>
+  </div>`;
+}
+// ===== APP-11-25D  END =====
+
+// ===== APP-11-25C  START: surgical incision, under Skin =====
+// Where it is, what was found (goes into the exam's Skin line), and what you did (goes into the note text).
+function incisionPanel(p) {
+  const c = p.incision || {};
+  const clash = c.act === 'Visualized incision' && c.state === 'dressing';
+  return `<div style="border:1px solid var(--line, #d8dde6);border-radius:10px;padding:8px;margin-top:8px">
+    <div class="small" style="font-weight:700">Surgical incision</div>
+    <div class="small muted">Where</div>
+    <div class="row">${INCISION_SIDES.map((v) => pk('incision.side', v, cap(v), c.side === v)).join('')}</div>
+    <div class="row">${INCISION_SITES.map((v) => pk('incision.site', v, cap(v), c.site === v && !c.siteOther)).join('')}
+      <input id="incother" value="${esc(c.siteOther ?? '')}" placeholder="or type the site" autocomplete="off" style="flex:1;min-width:9rem"></div>
+    <div class="small muted">Finding (goes in the exam, under Skin)</div>
+    <div class="row">${INCISION_STATES.map(([k, label]) => pk('incision.state', k, label, c.state === k)).join('')}</div>
+    <div class="small muted">Add to the note text</div>
+    <div class="row">${INCISION_ACTS.map((v) => pk('incision.act', v, v, c.act === v)).join('')}</div>
+    ${clash ? '<div class="small" id="incclash"><b>Check:</b> "Visualized incision" is picked with "Covered with dressing".</div>' : ''}
+    <div class="small" id="inchint">${esc([incisionExam(p), incisionSubjective(p)].filter(Boolean).join(' '))}</div>
+  </div>`;
+}
+// ===== APP-11-25C  END =====
 // ===== APP-11-20  END =====
 
 // ===== APP-11-24  START: time clock =====

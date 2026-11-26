@@ -226,6 +226,24 @@ export const DOPPLER_SIDES = ['left', 'right', 'bilateral'];
 export const DOPPLER_LIMBS = ['lower', 'upper']; // "ultrasound doppler of left lower extremity"
 // ===== APP-11-25B  END =====
 
+// ===== APP-11-25C  START: surgical incision, under Skin in the Exam button =====
+// Where the incision is: an optional side, then the site (or type it). "Surgical incision to right hip dry and intact."
+export const INCISION_SIDES = ['left', 'right', 'midline'];
+export const INCISION_SITES = ['hip', 'knee', 'shoulder', 'abdomen', 'back', 'chest', 'neck', 'leg', 'ankle', 'foot'];
+// What was found - goes into the exam's Skin line.
+export const INCISION_STATES = [['intact', 'Dry and intact', 'Surgical incision{at} dry and intact'], ['dressing', 'Covered with dressing', 'Surgical site{at} covered with dressing']];
+// What you did - goes into the note text (the subjective).
+export const INCISION_ACTS = ['Visualized incision', 'Assessed incision'];
+// ===== APP-11-25C  END =====
+
+// ===== APP-11-25D  START: edema for each leg, under Ext in the Exam button =====
+// "2+ left lower leg edema, no right lower leg edema"; the same on both legs: "2+ bilateral lower leg edema" / "No lower leg edema"
+export const EDEMA_GRADES = ['none', 'trace', '1+', '2+', '3+', '4+'];
+export const EDEMA_KINDS = ['pitting', 'non-pitting'];
+// The Ext choices that are about leg edema: picking one of these and picking a grade by leg replace each other.
+export const EDEMA_PRESET_RE = /lower leg edema$/i;
+// ===== APP-11-25D  END =====
+
 // Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
 // "Pain 6/10 to right knee and hip, aching and sharp."
 export const PAIN_SIDES = ['left', 'right', 'bilateral'];
