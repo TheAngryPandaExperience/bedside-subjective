@@ -2,11 +2,11 @@
 // Screens: day (patient list), import (roster or vitals), patient (prompts + editor), settings, log.
 
 import { parseRoster, parseVitals, matchVitals, formatVitals } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
 import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getClock, saveClock } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
-import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS } from './defaults.js';
+import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION_GROUP, DECISION_PHRASES, EXAM_SYSTEMS, BM_HOW, BM_KINDS, BACK_PARTS, O2_LITERS, GU_SYMPTOMS, CATHETERS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS } from './defaults.js';
 
 // Bump with every release so it's easy to confirm a phone has the latest copy.
 // 15 (11/11/2026) = APP-11-11: Today's decisions buttons, the computer's receipt after a send, varied wording,
@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS, DETAILS, PAIN_SIDES, PAIN_SITES, PAIN_TYPES, DECISION
 // 19 (11/24/2026) = APP-11-24: a time clock for each building and day (clock in, clock out, every time editable,
 // more than one stretch a day), with a time log in Settings. The times stay on the phone and in the backup; they are
 // never part of the daily summary that goes to the notes.
-const APP_VERSION = 19;
+const APP_VERSION = 21;
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -267,8 +267,10 @@ function pendingHtml() {
 
 function unsentHtml() {
   if (!unsent.length) return '';
-  return `<div class="banner" style="margin-bottom:12px"><div class="grow"><b>Not sent from other days:</b></div>
-    ${unsent.map((u) => `<button data-act="goto-day" data-date="${esc(u.date)}" data-b="${esc(u.building)}">${esc(u.building ? `${bname(u.building)} ` : '')}${esc(formatDate(u.date))} · ${u.never ? `${u.n} never sent` : `${u.n} changed`}</button>`).join('')}</div>`;
+  const shut = !!settings.folded?.unsent; // APP-11-25B: the card folds up to its heading
+  const n = unsent.reduce((t, u) => t + u.n, 0);
+  return `<div class="banner" style="margin-bottom:12px"><button class="ghost grow" data-act="fold" data-k="unsent" aria-expanded="${!shut}" style="text-align:left;min-height:40px"><b>${shut ? '▸' : '▾'} Not sent from other days${shut ? ` (${n} note${n === 1 ? '' : 's'} on ${unsent.length} day${unsent.length === 1 ? '' : 's'})` : ':'}</b></button>
+    ${shut ? '' : unsent.map((u) => `<button data-act="goto-day" data-date="${esc(u.date)}" data-b="${esc(u.building)}">${esc(u.building ? `${bname(u.building)} ` : '')}${esc(formatDate(u.date))} · ${u.never ? `${u.n} never sent` : `${u.n} changed`}</button>`).join('')}</div>`;
 }
 
 // Look through every saved day for notes that were never sent or were changed after the last send.
@@ -642,14 +644,18 @@ function mountDetails(p, openKey) {
   p.fields ??= {};
   let open = openKey;
   const filled = (d) => (d.key === 'pain' ? p.pain != null : d.key === 'abx' ? activeAbx(p.mrn, day.date).length > 0
-    : d.key === 'bm' ? !!p.bm?.date : d.key === 'exam' ? examLines(p).length > 0 // APP-11-20
+    : d.key === 'o2' ? !!o2Sentence(p) // APP-11-25
+    : d.key === 'ordered' ? orderedItems(p).length > 0 // APP-11-25B
+    : d.key === 'bm' ? !!(p.bm?.date || guSentence(p)) : d.key === 'exam' ? examLines(p).length > 0 // APP-11-20
       : d.key === 'dx' ? (p.tapDx || []).length > 0 : d.key === 'meds' ? (p.tapMeds || []).length > 0 // APP-11-22-CHART
       : String(p.fields[d.key] ?? '').trim() !== '');
   const filledAbx = () => activeAbx(p.mrn, day.date).length;
   const shown = (d) => {
     if (d.key === 'pain') return p.pain != null ? `${p.pain}/10` : '';
     if (d.key === 'abx') return String(filledAbx() || '');
-    if (d.key === 'bm') return bmSentence(p).replace(/^Last BM |\.$/g, ''); // APP-11-20
+    if (d.key === 'ordered') return String(orderedItems(p).length || ''); // APP-11-25B
+    if (d.key === 'o2') return [p.o2?.room ? 'RA' : '', o2Liters(p.o2?.liters) ? `${o2Liters(p.o2.liters)} L` : '', p.o2?.sob === 'denies' ? 'no SOB' : p.o2?.sob === 'reports' ? 'SOB' : '', p.o2?.tx ? 'tx' : ''].filter(Boolean).join(', '); // APP-11-25
+    if (d.key === 'bm') return [guSentence(p) ? 'GU' : '', bmSentence(p).replace(/^Last BM |\.$/g, '')].filter(Boolean).join(', '); // APP-11-20; APP-11-25
     if (d.key === 'exam') return String(examLines(p).length || '');
     if (d.key === 'dx') return String((p.tapDx || []).length || ''); // APP-11-22-CHART
     if (d.key === 'meds') return String((p.tapMeds || []).length || '');
@@ -676,7 +682,9 @@ function mountDetails(p, openKey) {
     const idx = DETAILS.indexOf(d);
     const next = DETAILS[idx + 1];
     if (d.key === 'abx') return `<div class="dpanel">${abxPanel(p)}${panelNav(next, false)}</div>`;
-    if (d.key === 'bm') return `<div class="dpanel">${bmPanel(p)}${panelNav(next)}</div>`; // APP-11-20
+    if (d.key === 'o2') return `<div class="dpanel">${o2Panel(p)}${panelNav(next)}</div>`; // APP-11-25
+    if (d.key === 'ordered') return `<div class="dpanel">${orderedPanel(p)}${panelNav(next)}</div>`; // APP-11-25B
+    if (d.key === 'bm') return `<div class="dpanel">${bmPanel(p)}${guPanel(p)}${panelNav(next)}</div>`; // APP-11-20; APP-11-25
     if (d.key === 'exam') return `<div class="dpanel">${examPanel(p)}${panelNav(next)}</div>`;
     if (d.key === 'dx' || d.key === 'meds') return `<div class="dpanel">${chartPanel(p, d.key)}${panelNav(next)}</div>`; // APP-11-22-CHART
     if (d.key === 'pain') {
@@ -719,6 +727,17 @@ function mountDetails(p, openKey) {
       else if (!t.value.trim()) delete p.bm;
       if (hint) hint.textContent = iso ? bmSentence(p) : t.value.trim() ? 'Type the date as 11/15 or 11/15/26. It cannot be after the date of service.' : '';
       if (!iso && t.value.trim()) return;
+    } else if (t.id === 'o2other') { // APP-11-25: liters typed instead of tapped
+      p.o2 ??= {};
+      if (t.value.trim()) { p.o2.liters = t.value.trim(); delete p.o2.room; } else delete p.o2.liters;
+      const hint = box.querySelector('#o2hint');
+      if (hint) hint.textContent = t.value.trim() && !o2Liters(t.value) ? 'Type the liters as a number, for example 2 or 2.5.' : o2Sentence(p);
+    } else if (t.id === 'ordus' || t.id === 'ordother') { // APP-11-25B: an ultrasound area or another order, typed
+      p.ordered ??= {};
+      const k = t.id === 'ordus' ? 'usOther' : 'other';
+      if (t.value.trim()) p.ordered[k] = t.value; else delete p.ordered[k];
+      const hint = box.querySelector('#ordhint');
+      if (hint) hint.textContent = orderedSentence(p);
     } else if (t.dataset.exinput) {
       p.exam ??= {};
       if (t.value.trim()) p.exam[t.dataset.exinput] = t.value; else delete p.exam[t.dataset.exinput];
@@ -740,7 +759,9 @@ function mountDetails(p, openKey) {
     else if ('dclose' in b.dataset) open = null;
     else if ('dclear' in b.dataset) {
       if (open === 'pain') setPain(p, null);
-      else if (open === 'bm') delete p.bm; // APP-11-20
+      else if (open === 'o2') delete p.o2; // APP-11-25
+      else if (open === 'ordered') delete p.ordered; // APP-11-25B
+      else if (open === 'bm') { delete p.bm; delete p.gu; } // APP-11-20; APP-11-25
       else if (open === 'exam') delete p.exam;
       else if (open === 'dx') delete p.tapDx; // APP-11-22-CHART
       else if (open === 'meds') delete p.tapMeds;
@@ -756,6 +777,52 @@ function mountDetails(p, openKey) {
       settings.bmHow = b.dataset.bmhow;
       await saveSettings(settings);
       if (p.bm) { p.bm.how = b.dataset.bmhow; await save(); }
+    } else if (b.dataset.o2l) { // APP-11-25: liters; tap the same number again to take it off
+      p.o2 ??= {};
+      if (o2Liters(p.o2.liters) === b.dataset.o2l) delete p.o2.liters; else { p.o2.liters = b.dataset.o2l; delete p.o2.room; }
+      await save();
+    } else if (b.dataset.o2sob) {
+      p.o2 ??= {};
+      if (p.o2.sob === b.dataset.o2sob) delete p.o2.sob; else p.o2.sob = b.dataset.o2sob;
+      await save();
+    } else if ('o2tx' in b.dataset) {
+      p.o2 ??= {};
+      if (p.o2.tx) delete p.o2.tx; else p.o2.tx = true;
+      await save();
+    } else if ('gudenies' in b.dataset) { // APP-11-25: denies and a complaint are never both on
+      p.gu ??= {};
+      if (p.gu.denies) delete p.gu.denies; else { p.gu.denies = true; delete p.gu.sx; }
+      await save();
+    } else if (b.dataset.gusx) {
+      p.gu ??= {};
+      const list = p.gu.sx || [];
+      p.gu.sx = list.includes(b.dataset.gusx) ? list.filter((x) => x !== b.dataset.gusx) : [...list, b.dataset.gusx];
+      if (p.gu.sx.length) delete p.gu.denies; else delete p.gu.sx;
+      await save();
+    } else if (b.dataset.gucath) { // picking Foley or Suprapubic also turns on "denies any complications"; tap that to take it off
+      p.gu ??= {};
+      if (p.gu.cath === b.dataset.gucath) { delete p.gu.cath; delete p.gu.cathOk; } else { p.gu.cath = b.dataset.gucath; if (!(p.gu.cathSx || []).length) p.gu.cathOk = true; }
+      tidyPicks(p, '');
+      await save();
+    } else if ('gucathok' in b.dataset) {
+      if (p.gu?.cath) { p.gu.cathOk = !p.gu.cathOk; if (p.gu.cathOk) delete p.gu.cathSx; await save(); }
+    } else if (b.dataset.guost) {
+      p.gu ??= {};
+      if (p.gu.ostomy === b.dataset.guost) delete p.gu.ostomy; else p.gu.ostomy = b.dataset.guost;
+      tidyPicks(p, '');
+      await save();
+    } else if (b.dataset.pick) { // APP-11-25B: one handler for the added choices - data-pick="o2.via" data-v="mask"
+      const [root, key] = b.dataset.pick.split('.');
+      const o = (p[root] ??= {});
+      const v = b.dataset.v;
+      if (b.dataset.kind === 'multi') {
+        const list = o[key] || [];
+        o[key] = list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
+        if (!o[key].length) delete o[key];
+      } else if (v == null) { if (o[key]) delete o[key]; else o[key] = true; }
+      else if (o[key] === v) delete o[key]; else o[key] = v;
+      tidyPicks(p, b.dataset.pick);
+      await save();
     } else if (b.dataset.tap) { // APP-11-22-CHART: tap a diagnosis or a medication to add it, tap it again to take it off
       const k = b.dataset.tap === 'dx' ? 'tapDx' : 'tapMeds';
       const list = p[k] || [];
@@ -804,6 +871,110 @@ function bmPanel(p) {
     <div class="row">${BM_HOW.map(([k, label]) => `<button class="dpreset ${how === k ? 'on' : ''}" data-bmhow="${k}">${esc(label)}</button>`).join('')}</div>
     <div class="small" id="bmhint">${esc(bmSentence(p))}</div>`;
 }
+
+// ===== APP-11-25  START: O2 panel; urinary, catheter and ostomy inside the BM panel =====
+function o2Panel(p) {
+  const o = p.o2 || {};
+  const cur = o2Liters(o.liters);
+  const typed = o.liters && !O2_LITERS.includes(cur) ? o.liters : '';
+  const noteText = document.getElementById('note')?.value ?? p.text;
+  const clash = o.sob === 'reports' && saysNoBreathingTrouble(noteText);
+  return `<div class="small muted">Liters of O2</div>
+    <div class="dkeys">${O2_LITERS.map((l) => `<button data-o2l="${l}" class="${cur === l ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="row"><input id="o2other" value="${esc(typed)}" placeholder="or type: 2.5" inputmode="decimal" autocomplete="off" style="flex:1;min-width:9rem">
+      ${pk('o2.room', null, 'Room air', !!o.room)}</div>
+    <div class="small muted">Given by</div>
+    <div class="row">${O2_DELIVERY.map((v) => pk('o2.via', v, cap(v), o.via === v)).join('')}</div>
+    <div class="small muted">When</div>
+    <div class="row">${O2_WHEN.map((v) => pk('o2.when', v, cap(v), o.when === v)).join('')}</div>
+    <div class="row">${O2_PAP.map((v) => pk('o2.pap', v, v, o.pap === v)).join('')}${pk('o2.wean', null, 'Weaning O2 as tolerated', !!o.wean)}</div>
+    <div class="small muted">Shortness of breath</div>
+    <div class="row">
+      <button class="dpreset ${o.sob === 'denies' ? 'on' : ''}" data-o2sob="denies">Denies shortness of breath</button>
+      <button class="dpreset ${o.sob === 'reports' ? 'on' : ''}" data-o2sob="reports">Has shortness of breath</button>
+    </div>
+    <div class="small muted">Cough</div>
+    <div class="row">${pk('o2.cough', 'denies', 'Denies cough', o.cough === 'denies')}${COUGH_KINDS.map((v) => pk('o2.cough', v, `${cap(v)} cough`, o.cough === v)).join('')}</div>
+    <div class="small muted">Wheezing</div>
+    <div class="row">${pk('o2.wheeze', 'denies', 'Denies wheezing', o.wheeze === 'denies')}${pk('o2.wheeze', 'reports', 'Has wheezing', o.wheeze === 'reports')}</div>
+    <div class="row"><button class="dpreset ${o.tx ? 'on' : ''}" data-o2tx>Continues breathing treatments as ordered</button></div>
+    ${clash ? '<div class="small" id="o2clash"><b>Check the note:</b> it still says the patient denies breathing complications. Change that sentence if it no longer fits.</div>' : ''}
+    <div class="small" id="o2hint">${esc(o2Sentence(p))}</div>`;
+}
+
+function guPanel(p) {
+  const g = p.gu || {};
+  const sx = g.sx || [];
+  const noCath = g.cath ? '' : 'disabled';
+  const noOst = g.ostomy ? '' : 'disabled';
+  return `<hr><div class="small muted">Bowel - pt complains of (tap any)</div>
+    <div class="row">${GI_SYMPTOMS.map((s) => pk('gu.gi', s, cap(s), (g.gi || []).includes(s), 'data-kind="multi"')).join('')}</div>
+    <hr><div class="small muted">Urinary</div>
+    <div class="row"><button class="dpreset ${g.denies && !sx.length ? 'on' : ''}" data-gudenies>Pt denies urinary complications</button></div>
+    <div class="small muted">Pt complains of (tap any)</div>
+    <div class="row">${GU_SYMPTOMS.map((s) => `<button class="dpreset ${sx.includes(s) ? 'on' : ''}" data-gusx="${esc(s)}">${esc(cap(s))}</button>`).join('')}</div>
+    <div class="small muted">Urine</div>
+    <div class="row">${URINE_LOOKS.map((v) => pk('gu.urine', v, cap(v), g.urine === v)).join('')}</div>
+    <hr><div class="small muted">Catheter</div>
+    <div class="row">${CATHETERS.map((c) => `<button class="dpreset ${g.cath === c ? 'on' : ''}" data-gucath="${c}">${c}</button>`).join('')}</div>
+    <div class="row"><button class="dpreset ${g.cath && g.cathOk ? 'on' : ''}" data-gucathok ${noCath}>Denies any complications</button></div>
+    <div class="small muted">Complains of${g.cath ? '' : ' (pick the catheter first)'}</div>
+    <div class="row">${CATH_SYMPTOMS.map((s) => pk('gu.cathSx', s, cap(s), (g.cathSx || []).includes(s), `data-kind="multi" ${noCath}`)).join('')}</div>
+    <div class="row">${pk('gu.drain', null, 'Draining clear yellow urine', !!g.drain, noCath)}${pk('gu.trial', null, 'Voiding trial planned', !!g.trial, noCath)}</div>
+    <hr><div class="small muted">Ostomy</div>
+    <div class="row">${OSTOMIES.map((c) => `<button class="dpreset ${g.ostomy === c ? 'on' : ''}" data-guost="${c}">${c}</button>`).join('')}</div>
+    <div class="row">${pk('gu.ostOk', null, 'Denies any complications', !!g.ostOk, noOst)}${pk('gu.stoma', null, 'Stoma pink and moist', !!g.stoma, noOst)}</div>
+    <div class="small muted">Output${g.ostomy ? '' : ' (pick the ostomy first)'}</div>
+    <div class="row">${OSTOMY_OUTPUT.map(([k]) => pk('gu.output', k, cap(k), g.output === k, noOst)).join('')}</div>
+    <div class="small muted">Skin around stoma</div>
+    <div class="row">${STOMA_SKIN.map((v) => pk('gu.skin', v, cap(v), g.skin === v, noOst)).join('')}</div>
+    <hr><div class="row">${pk('gu.peg', null, 'PEG tube', !!g.peg)}${pk('gu.pegOk', null, 'Site clean and dry', !!g.pegOk, g.peg ? '' : 'disabled')}</div>
+    <div class="small" id="guhint">${esc(guSentence(p))}</div>`;
+}
+// ===== APP-11-25  END =====
+
+// ===== APP-11-25B  START: shared button maker, the rules between choices, the Ordered panel =====
+const cap = (t) => t[0].toUpperCase() + t.slice(1);
+// One choice button. data-pick="o2.via" names where it is kept; with a value it is one-of, without it is on/off.
+const pk = (path, v, label, on, extra = '') => `<button class="dpreset ${on ? 'on' : ''}" data-pick="${path}"${v != null ? ` data-v="${esc(v)}"` : ''} ${extra}>${esc(label)}</button>`;
+
+/** Choices that cannot stand together, and extras that need their main choice. Called after every tap. */
+function tidyPicks(p, what) {
+  const o = p.o2;
+  if (o) {
+    if (what === 'o2.room' && o.room) { delete o.liters; delete o.via; delete o.when; delete o.wean; }
+    else if ((what === 'o2.via' || what === 'o2.when' || what === 'o2.wean') && (o.via || o.when || o.wean)) delete o.room;
+  }
+  const g = p.gu;
+  if (g) {
+    if (what === 'gu.cathSx' && (g.cathSx || []).length) delete g.cathOk;
+    if (!g.cath) { delete g.cathOk; delete g.cathSx; delete g.drain; delete g.trial; }
+    if (!g.ostomy) { delete g.ostOk; delete g.stoma; delete g.output; delete g.skin; }
+    if (!g.peg) delete g.pegOk;
+  }
+  const r = p.ordered;
+  if (r && Object.keys(r).length === 0) delete p.ordered;
+}
+
+// Ordered: labs and tests ordered today -> "Ordered CBC, BMP and CXR." at the end of the note.
+function orderedPanel(p) {
+  const r = p.ordered || {};
+  const has = (k, v) => (r[k] || []).includes(v);
+  return `<div class="small muted">Labs (tap any)</div>
+    <div class="row">${ORDER_LABS.map((v) => pk('ordered.labs', v, v, has('labs', v), 'data-kind="multi"')).join('')}</div>
+    <div class="small muted">Tests</div>
+    <div class="row">${ORDER_TESTS.map((v) => pk('ordered.tests', v, v, has('tests', v), 'data-kind="multi"')).join('')}</div>
+    <div class="small muted">Ultrasound of</div>
+    <div class="row">${US_AREAS.map((v) => pk('ordered.us', v, cap(v), has('us', v), 'data-kind="multi"')).join('')}
+      <input id="ordus" value="${esc(r.usOther ?? '')}" placeholder="or type the area" autocomplete="off" style="flex:1;min-width:9rem"></div>
+    <div class="small muted">Ultrasound doppler of extremity (pick the side and upper or lower)</div>
+    <div class="row">${DOPPLER_SIDES.map((v) => pk('ordered.dopSide', v, cap(v), r.dopSide === v)).join('')}</div>
+    <div class="row">${DOPPLER_LIMBS.map((v) => pk('ordered.dopLimb', v, `${cap(v)} extremity`, r.dopLimb === v)).join('')}</div>
+    <div class="small muted">Anything else ordered</div>
+    <div class="row"><input id="ordother" value="${esc(r.other ?? '')}" placeholder="Type…" autocomplete="off" style="flex:1"></div>
+    <div class="small" id="ordhint">${esc(orderedSentence(p))}</div>`;
+}
+// ===== APP-11-25B  END =====
 
 // Exam: one box per body system. Only the systems filled in are sent, as "Exam: Resp: ..." lines under the patient.
 function examPanel(p) {
@@ -855,10 +1026,13 @@ function clockHtml() {
       </div>
     </div>`;
   }).join('');
-  return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">
-    <div class="row"><b class="grow">Time${bn ? ` at ${esc(bn)}` : ''}</b>
+  const shut = !!settings.folded?.clock; // APP-11-25B: the card folds up to its heading
+  const head = `<div class="row"><button class="ghost grow" data-act="fold" data-k="clock" aria-expanded="${!shut}" style="text-align:left;min-height:40px;padding-left:0"><b>${shut ? '▸' : '▾'} Time${bn ? ` at ${esc(bn)}` : ''}</b></button>
       <span class="small muted">${segs.length ? `Total ${esc(clockSpan(total))}${open ? ' + current' : ''}` : 'Not clocked in'}</span></div>
-    ${open ? `<div class="small">Clocked in at <b>${esc(clock12(open.in))}</b>.</div>` : ''}
+    ${open ? `<div class="small">Clocked in at <b>${esc(clock12(open.in))}</b>.</div>` : ''}`;
+  if (shut) return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">${head}</div>`;
+  return `<div class="card" style="display:grid;gap:8px;margin-bottom:14px">
+    ${head}
     ${rows}
     <div class="row" style="flex-wrap:wrap">
       ${open ? '<button class="primary grow" data-act="clock-out">Clock out now</button>'
@@ -1975,6 +2149,15 @@ app.addEventListener('click', async (e) => {
     }
     case 'send': await sendDay(); break;
     // APP-11-24: time clock
+    case 'fold': { // APP-11-25B: fold or unfold the Time card or the Not sent card; remembered on this phone
+      settings.folded = { ...(settings.folded || {}), [b.dataset.k]: !settings.folded?.[b.dataset.k] };
+      await saveSettings(settings);
+      const cbox = app.querySelector('#clock');
+      if (cbox) { cbox.innerHTML = clockHtml(); wireClock(); }
+      const ubox = document.getElementById('unsent');
+      if (ubox) ubox.innerHTML = unsentHtml();
+      break;
+    }
     case 'clock-in': await clockChange((segs) => segs.push({ in: nowHM(), out: '' })); break;
     case 'clock-out': await clockChange((segs) => { const open = segs.find((s) => s.in && !s.out); if (open) open.out = nowHM(); }); break;
     case 'clock-add': await clockChange((segs) => segs.push({ in: '', out: '' })); break;

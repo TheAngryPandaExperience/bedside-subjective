@@ -1,7 +1,7 @@
 // Pure note logic: template filling, shortcut expansion, daily summary and send log.
 
 import { formatVitals } from './parsers.js';
-import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS, EXAM_SYSTEMS } from './defaults.js';
+import { DETAILS, PHRASE_VARIANTS, VITALS_TAILS, EXAM_SYSTEMS, GU_SYMPTOMS, OSTOMIES, O2_DELIVERY, O2_WHEN, O2_PAP, COUGH_KINDS, CATH_TEXT, CATH_SYMPTOMS, URINE_LOOKS, OSTOMY_OUTPUT, STOMA_SKIN, GI_SYMPTOMS, ORDER_LABS, ORDER_TESTS, US_AREAS, DOPPLER_SIDES, DOPPLER_LIMBS } from './defaults.js';
 
 const joinAnd = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
 
@@ -78,7 +78,13 @@ function detailMap(p) {
       if (p.abx?.length) out.abx = p.abx.join(' ');
       continue;
     }
-    if (d.key === 'bm') { const s = bmSentence(p); if (s) out.bm = s; continue; } // APP-11-20
+    if (d.key === 'o2') { const s = o2Sentence(p); if (s) out.o2 = s; continue; } // APP-11-25
+    if (d.key === 'bm') { // APP-11-20; APP-11-25: the urinary / catheter / ostomy sentences follow the BM sentence
+      const s = bmSentence(p); if (s) out.bm = s;
+      const g = guSentence(p); if (g) out.gu = g;
+      continue;
+    }
+    if (d.key === 'ordered') { const s = orderedSentence(p); if (s) out.ordered = s; continue; } // APP-11-25B
     if (d.key === 'exam') continue; // APP-11-20: exam findings go out as their own lines (examLines), never in the note text
     if (d.key === 'dx' || d.key === 'meds') continue; // APP-11-22-CHART: tapped items go out as their own lines (tapLines)
     let v = String(f[d.key] ?? '').trim();
@@ -117,7 +123,7 @@ function insertAfter(text, re, add) {
  */
 export function fullNote(p) {
   const d = detailMap(p);
-  let text = String(p.text || '').trim();
+  let text = stripRetapped(String(p.text || ''), p).trim(); // APP-11-25: a sentence tapped again today replaces the one carried in the text
   const tail = [];
   const place = (keys, re) => {
     const add = keys.map((k) => d[k]).filter(Boolean).join(' ');
@@ -130,8 +136,9 @@ export function fullNote(p) {
   // APP-11-11: also the varied wordings ("Appetite fair, ...", "Appetite is fair, ...", "Pt continues with therapy.")
   place(['meal'], /\b(?:(?:good|fair|poor)\s+appetite|appetite\s+(?:is\s+)?(?:good|fair|poor))[^.]*\./i);
   place(['therapy'], /\b(?:continues to work with|continues with|working with|participat\w* (?:in|with)) therapy[^.]*\./i);
-  place(['bm'], /\bconstipation[^.]*\./i); // APP-11-20: the BM sentence follows the constipation sentence
-  for (const k of ['pain', 'labs', 'said']) if (d[k]) tail.push(d[k]); // APP-11-22: labs sentence at the end
+  place(['o2'], /\bbreathing complications[^.]*\./i); // APP-11-25: the O2 sentences follow the breathing sentence
+  place(['bm', 'gu'], /\bconstipation[^.]*\./i); // APP-11-20: the BM sentence follows the constipation sentence (APP-11-25: then urinary / catheter / ostomy)
+  for (const k of ['pain', 'labs', 'ordered', 'said']) if (d[k]) tail.push(d[k]); // APP-11-22: labs sentence at the end; APP-11-25B: then what was ordered
   if (tail.length && text && !/[.!?"]$/.test(text)) text += '.';
   return [text, ...tail].filter(Boolean).join(' ');
 }
@@ -143,7 +150,8 @@ export function fullNote(p) {
 export function carryForward(lastNote, todayVitals, settings) {
   const vit = formatVitals(todayVitals, settings);
   // APP-11-20: yesterday's "Last BM ..." sentence is about that day, so it is not carried into today's note
-  const kept = stripAbx(String(lastNote)).replace(/\s*\bLast BM [^.]*\./g, '');
+  // APP-11-25B: yesterday's "Ordered ..." sentence is about that day too
+  const kept = stripAbx(String(lastNote)).replace(/\s*\bLast BM [^.]*\./g, '').replace(/(^|[.!?"])\s*Ordered [^.]*\./g, '$1');
   return kept.trim().replace(/Vital signs:.*?(?=\b(?:pt\s+)?denies\b)/i, `Vital signs: ${vit ? `${vit}; ` : ' '}`) + ' ';
 }
 
@@ -189,6 +197,137 @@ export function examLines(p) {
     .filter(([, v]) => v).map(([k, v]) => `Exam: ${k}: ${v}`);
 }
 // ===== APP-11-20  END =====
+
+// ===== APP-11-25  START: O2, urinary, catheter and ostomy sentences =====
+const listAnd = (a) => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`);
+
+/** The liters as typed or tapped ("2", "2.5", "2 L") as a plain number, or '' when it is not a number. */
+export function o2Liters(v) {
+  const m = String(v ?? '').trim().match(/^(\d{1,2}(?:\.\d)?)\s*(?:l|lpm|liters?)?$/i);
+  return m ? m[1] : '';
+}
+
+/**
+ * The O2 button's sentences from p.o2 = { liters, via, when, room, pap, wean, sob, cough, wheeze, tx }:
+ * "Pt on 2 L O2 via nasal cannula, continuous." or "Pt on room air."; "Pt uses CPAP."; "Weaning O2 as tolerated.";
+ * "Pt denies shortness of breath."; "Pt reports dry cough."; "Pt denies wheezing."; "Continues breathing treatments as ordered."
+ */
+export function o2Sentence(p) {
+  const o = p.o2 || {};
+  const out = [];
+  const l = o2Liters(o.liters);
+  const via = O2_DELIVERY.includes(o.via) ? ` via ${o.via}` : '';
+  const when = O2_WHEN.includes(o.when) ? `, ${o.when}` : '';
+  if (o.room) out.push('Pt on room air.');
+  else if (l || via || when) out.push(`Pt on ${l ? `${l} L ` : ''}O2${via}${when}.`);
+  if (O2_PAP.includes(o.pap)) out.push(`Pt uses ${o.pap}.`);
+  if (o.wean) out.push('Weaning O2 as tolerated.');
+  if (o.sob === 'denies') out.push('Pt denies shortness of breath.');
+  else if (o.sob === 'reports') out.push('Pt reports shortness of breath.');
+  if (o.cough === 'denies') out.push('Pt denies cough.');
+  else if (COUGH_KINDS.includes(o.cough)) out.push(`Pt reports ${o.cough} cough.`);
+  if (o.wheeze === 'denies') out.push('Pt denies wheezing.');
+  else if (o.wheeze === 'reports') out.push('Pt reports wheezing.');
+  if (o.tx) out.push('Continues breathing treatments as ordered.');
+  return out.join(' ');
+}
+
+const picked = (all, list) => all.filter((s) => (list || []).includes(s));
+
+/**
+ * The bowel, urinary, catheter, ostomy and PEG sentences from p.gu, in this order:
+ * "Pt complains of nausea and bloating."; "Pt denies urinary complications." or "Pt complains of dysuria and urgency.";
+ * "Urine cloudy."; "Foley catheter in place, denies any complications." (or ", complains of leaking."); "Draining clear
+ * yellow urine."; "Voiding trial planned."; "Colostomy in place, denies any complications."; "Stoma pink and moist.";
+ * "Output formed."; "Skin around stoma intact."; "PEG tube in place, site clean and dry."
+ */
+export function guSentence(p) {
+  const g = p.gu || {};
+  const out = [];
+  const gi = picked(GI_SYMPTOMS, g.gi);
+  if (gi.length) out.push(`Pt complains of ${listAnd(gi)}.`);
+  const sx = picked(GU_SYMPTOMS, g.sx);
+  if (sx.length) out.push(`Pt complains of ${listAnd(sx)}.`);
+  else if (g.denies) out.push('Pt denies urinary complications.');
+  if (URINE_LOOKS.includes(g.urine)) out.push(`Urine ${g.urine}.`);
+  if (CATH_TEXT[g.cath]) {
+    const csx = picked(CATH_SYMPTOMS, g.cathSx);
+    out.push(`${CATH_TEXT[g.cath]}${csx.length ? `, complains of ${listAnd(csx)}` : g.cathOk ? ', denies any complications' : ''}.`);
+    if (g.drain) out.push('Draining clear yellow urine.');
+    if (g.trial) out.push('Voiding trial planned.');
+  }
+  if (OSTOMIES.includes(g.ostomy)) {
+    out.push(`${g.ostomy} in place${g.ostOk ? ', denies any complications' : ''}.`);
+    if (g.stoma) out.push('Stoma pink and moist.');
+    const o = OSTOMY_OUTPUT.find(([k]) => k === g.output);
+    if (o) out.push(`${o[1]}.`);
+    if (STOMA_SKIN.includes(g.skin)) out.push(`Skin around stoma ${g.skin}.`);
+  }
+  if (g.peg) out.push(`PEG tube in place${g.pegOk ? ', site clean and dry' : ''}.`);
+  return out.join(' ');
+}
+
+/** The items of the Ordered button, in the order they are written. */
+export function orderedItems(p) {
+  const o = p.ordered || {};
+  const clean = (t) => String(t ?? '').replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  const out = [...picked(ORDER_LABS, o.labs), ...picked(ORDER_TESTS, o.tests), ...picked(US_AREAS, o.us).map((a) => `ultrasound of ${a}`)];
+  if (clean(o.usOther)) out.push(`ultrasound of ${clean(o.usOther)}`);
+  if (DOPPLER_SIDES.includes(o.dopSide) && DOPPLER_LIMBS.includes(o.dopLimb)) {
+    out.push(`ultrasound doppler of ${o.dopSide} ${o.dopLimb} ${o.dopSide === 'bilateral' ? 'extremities' : 'extremity'}`);
+  }
+  if (clean(o.other)) out.push(clean(o.other));
+  return out;
+}
+
+/** "Ordered CBC, BMP and CXR." from p.ordered; '' when nothing is picked. */
+export function orderedSentence(p) {
+  const items = orderedItems(p);
+  return items.length ? `Ordered ${listAnd(items)}.` : '';
+}
+
+const alt = (list) => list.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+const listRe = (lead, list) => new RegExp(`\\s*${lead}(?:${alt(list)})(?:(?:, | and )(?:${alt(list)}))*\\.`, 'g');
+const RETAP = {
+  air: [new RegExp(`\\s*Pt on (?:\\d{1,2}(?:\\.\\d)? L )?O2(?: via (?:${alt(O2_DELIVERY)}))?(?:, (?:${alt(O2_WHEN)}))?\\.`, 'g'), /\s*Pt on room air\./g],
+  pap: [new RegExp(`\\s*Pt uses (?:${alt(O2_PAP)})\\.`, 'g')],
+  wean: [/\s*Weaning O2 as tolerated\./g],
+  sob: [/\s*Pt (?:denies|reports) shortness of breath\./g],
+  cough: [/\s*Pt denies cough\./g, new RegExp(`\\s*Pt reports (?:${alt(COUGH_KINDS)}) cough\\.`, 'g')],
+  wheeze: [/\s*Pt (?:denies|reports) wheezing\./g],
+  tx: [/\s*Continues breathing treatments as ordered\./g],
+  gi: [listRe('Pt complains of ', GI_SYMPTOMS)],
+  urinary: [/\s*Pt denies urinary complications\./g, listRe('Pt complains of ', GU_SYMPTOMS)],
+  urine: [new RegExp(`\\s*Urine (?:${alt(URINE_LOOKS)})\\.`, 'g')],
+  cath: [new RegExp(`\\s*(?:${alt(Object.values(CATH_TEXT))})(?:, denies any complications|, complains of (?:${alt(CATH_SYMPTOMS)})(?:(?:, | and )(?:${alt(CATH_SYMPTOMS)}))*)?\\.`, 'g'),
+    /\s*Draining clear yellow urine\./g, /\s*Voiding trial planned\./g],
+  ostomy: [new RegExp(`\\s*(?:${alt(OSTOMIES)}) in place(?:, denies any complications)?\\.`, 'g'), /\s*Stoma pink and moist\./g,
+    new RegExp(`\\s*(?:${alt(OSTOMY_OUTPUT.map((x) => x[1]))})\\.`, 'g'), new RegExp(`\\s*Skin around stoma (?:${alt(STOMA_SKIN)})\\.`, 'g')],
+  peg: [/\s*PEG tube in place(?:, site clean and dry)?\./g],
+};
+
+/**
+ * Yesterday's note is carried forward with these sentences in its text. When the same thing is tapped again today, the
+ * carried sentence is taken out so it is written once, with today's choice. A part that is not tapped today is left
+ * exactly as it is in the text.
+ */
+export function stripRetapped(text, p) {
+  const o = p.o2 || {};
+  const g = p.gu || {};
+  const on = { air: !!(o.room || o2Liters(o.liters) || O2_DELIVERY.includes(o.via) || O2_WHEN.includes(o.when)), pap: O2_PAP.includes(o.pap),
+    wean: !!o.wean, sob: !!o.sob, cough: !!o.cough, wheeze: !!o.wheeze, tx: !!o.tx,
+    gi: picked(GI_SYMPTOMS, g.gi).length > 0, urinary: !!(g.denies || picked(GU_SYMPTOMS, g.sx).length), urine: URINE_LOOKS.includes(g.urine),
+    cath: !!CATH_TEXT[g.cath], ostomy: OSTOMIES.includes(g.ostomy), peg: !!g.peg };
+  let t = String(text);
+  for (const k of Object.keys(RETAP)) if (on[k]) for (const re of RETAP[k]) t = t.replace(re, '');
+  return t;
+}
+
+/** True when the note's own text says the patient denies breathing complications (any of the app's wordings). */
+export function saysNoBreathingTrouble(text) {
+  return /\b(?:denies (?:any )?breathing complications|no breathing complications reported|reports no breathing complications)\b/i.test(String(text || ''));
+}
+// ===== APP-11-25  END =====
 
 // ===== APP-11-11  START: varied wording and blanks =====
 

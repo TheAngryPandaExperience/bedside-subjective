@@ -140,6 +140,7 @@ export const DEFAULT_SETTINGS = {
   providerName: '',
   varyWording: true, // APP-11-11: routine sentences are worded a little differently each day (Settings turns it off)
   bmHow: 'both', // APP-11-20: how the BM sentence is written; the BM panel changes it
+  folded: {}, // APP-11-25B: { clock: true, unsent: true } = that card on the list screen is folded up
 };
 
 // Quick details on each patient, in note order. All optional; note.js fullNote() puts each in its place.
@@ -158,9 +159,11 @@ export const DETAILS = [
     numberText: (v) => `Pt ambulated ${v} ft with therapy`,
     quick: ['25', '50', '100', '150', '200', '300'], presets: ['Did not ambulate with therapy today'] },
   { key: 'abx', label: 'ABX' },
-  { key: 'bm', label: 'BM' }, // APP-11-20: when the last BM was (see note.js bmSentence)
+  { key: 'o2', label: 'O2' }, // APP-11-25: liters of oxygen, shortness of breath, breathing treatments (see note.js o2Sentence)
+  { key: 'bm', label: 'BM' }, // APP-11-20: when the last BM was (see note.js bmSentence); APP-11-25: also urinary, catheter, ostomy
   // APP-11-22: "Labs reviewed." in the note tells the Note Updater (version 84) to put the day's labs in the plan
   { key: 'labs', label: 'Labs', prefix: '', presets: ['Labs reviewed', 'Labs reviewed with pt'] },
+  { key: 'ordered', label: 'Ordered' }, // APP-11-25B: labs and tests ordered today (see note.js orderedSentence)
   { key: 'said', label: 'Pt said', prefix: '', quote: true, presets: [] },
   { key: 'exam', label: 'Exam' }, // APP-11-20: goes out as "Exam: Resp: ..." lines under the patient, not in the note text
   // APP-11-22-CHART: the patient's diagnoses and current medications, pulled from the computer (Note Updater version 85).
@@ -190,6 +193,38 @@ export const BM_KINDS = ['firm', 'loose', 'diarrhea'];
 // APP-11-22: "back" asks which part. The site is written "lower back", "mid back" or "upper back" ("back" if none picked).
 export const BACK_PARTS = ['lower', 'mid', 'upper'];
 // ===== APP-11-20  END =====
+
+// ===== APP-11-25  START: O2 button; urinary, catheter and ostomy choices inside the BM button =====
+// Liters of oxygen to tap (any other amount can be typed): "Pt on 2 L O2."
+export const O2_LITERS = ['1', '2', '3', '4', '5', '6'];
+// "Pt complains of dysuria, frequency and blood in urine."
+export const GU_SYMPTOMS = ['dysuria', 'frequency', 'urgency', 'hesitancy', 'urinary incontinence', 'nocturia', 'urinary retention', 'flank pain', 'blood in urine']; // APP-11-25B: five more
+// "Foley catheter in place, denies any complications."
+export const CATHETERS = ['Foley', 'Suprapubic', 'Nephrostomy', 'Condom', 'Straight cath']; // APP-11-25B: three more
+// "Colostomy in place."
+export const OSTOMIES = ['Colostomy', 'Ostomy', 'Ileostomy', 'Urostomy']; // APP-11-25B: Urostomy
+// ===== APP-11-25  END =====
+
+// ===== APP-11-25B  START: more choices in the O2 and BM buttons; the Ordered button =====
+export const O2_DELIVERY = ['nasal cannula', 'mask', 'trach']; // "Pt on 2 L O2 via nasal cannula, continuous."
+export const O2_WHEN = ['continuous', 'as needed', 'at night only'];
+export const O2_PAP = ['CPAP', 'BiPAP']; // "Pt uses CPAP."
+export const COUGH_KINDS = ['dry', 'productive']; // "Pt reports dry cough."
+// How each catheter is written, before ", denies any complications" or ", complains of ..."
+export const CATH_TEXT = { Foley: 'Foley catheter in place', Suprapubic: 'Suprapubic catheter in place', Nephrostomy: 'Nephrostomy tube in place',
+  Condom: 'Condom catheter in place', 'Straight cath': 'Straight catheterization as ordered' };
+export const CATH_SYMPTOMS = ['leaking', 'pain', 'blockage', 'hematuria']; // "Foley catheter in place, complains of leaking and pain."
+export const URINE_LOOKS = ['clear', 'cloudy', 'with sediment']; // "Urine cloudy."
+export const OSTOMY_OUTPUT = [['formed', 'Output formed'], ['liquid', 'Output liquid'], ['high output', 'High output']];
+export const STOMA_SKIN = ['intact', 'irritated']; // "Skin around stoma intact."
+export const GI_SYMPTOMS = ['nausea', 'vomiting', 'abdominal pain', 'bloating', 'bowel incontinence', 'blood in stool']; // "Pt complains of nausea and bloating."
+// The Ordered button: "Ordered CBC, BMP, CXR and ultrasound doppler of left lower extremity."
+export const ORDER_LABS = ['CBC', 'BMP', 'CMP', 'Magnesium', 'A1c', 'TSH', 'PT/INR', 'BNP', 'Lipid panel', 'Vitamin D', 'Vitamin B12', 'UA', 'UA with culture', 'Blood cultures', 'C diff stool test'];
+export const ORDER_TESTS = ['CXR', 'KUB'];
+export const US_AREAS = ['abdomen', 'kidneys', 'bladder', 'pelvis']; // "ultrasound of abdomen"; any other area can be typed
+export const DOPPLER_SIDES = ['left', 'right', 'bilateral'];
+export const DOPPLER_LIMBS = ['lower', 'upper']; // "ultrasound doppler of left lower extremity"
+// ===== APP-11-25B  END =====
 
 // Optional pain area and type buttons under the pain score. Chosen ones join the pain sentence:
 // "Pain 6/10 to right knee and hip, aching and sharp."
