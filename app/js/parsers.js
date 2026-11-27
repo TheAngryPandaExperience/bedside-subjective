@@ -118,8 +118,42 @@ function trailingMrn(rest) {
 function roomFrom(rest) {
   const m = rest.match(/\b(?:Pod|Unit|Hall|Wing)\s+\w{1,3}\s+\d{2,4}\s*-\s*\w{1,2}\b/i)
     || rest.match(/\bRoom:?\s*\w+/i);
-  return m ? m[0].replace(/\s+/g, ' ') : '';
+  if (m) return m[0].replace(/\s+/g, ' ');
+  // ===== APP-11-26G  START: the PCC download's own columns - "(MRN) <unit> <room> - <bed> <birth date> ..." =====
+  // Seen in the real downloads on 11/26/2026: the unit can be a bare number ("1 103 - A"), not only "Pod A".
+  // Taken only when it sits right after the name and right before a date, exactly as written in the file.
+  const g = rest.match(/^\s*(?:(\S(?:.{0,18}?\S)?)\s+)?(\d{1,4}[A-Za-z]?)\s*-\s*([A-Za-z0-9]{1,2})(?=\s+\d{1,2}\/\d{1,2}\/\d{2,4})/);
+  return g ? `${g[1] ? `${g[1].replace(/\s+/g, ' ')} ` : ''}${g[2]} - ${g[3]}` : '';
+  // ===== APP-11-26G  END =====
 }
+
+// ===== APP-11-26G  START: a Word (.docx) roster has one table cell per line =====
+// "MOUSE, MICKEY (7961)" / "Pod A 202 - 1" / birth date / date / "7961" arrive as five lines. The lines that belong
+// to a patient are put back on the patient's line, so the room and the second MRN reading are found like in a PDF.
+// Only a line that is a name-and-MRN with nothing after it is joined, and at most its next 4 cells.
+function joinCells(text) {
+  const lines = String(text).split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(ROSTER_ROW);
+    if (!m || lines[i].slice(m.index + m[0].length).trim()) { out.push(lines[i]); continue; }
+    let row = lines[i];
+    let taken = 0;
+    let j = i + 1;
+    for (; j < lines.length && taken < 4; j++) {
+      const t = lines[j].trim();
+      if (!t) continue;
+      if (ROSTER_ROW.test(t) || /resident|page\s*#|^\s*(date|time|user):/i.test(t) || t.length > 24) break;
+      row += ` ${t}`;
+      taken += 1;
+      if (taken > 1 && /^[0-9A-Za-z]{2,12}$/.test(t)) { j += 1; break; } // the MRN column closes the row
+    }
+    out.push(row);
+    i = j - 1;
+  }
+  return out.join('\n');
+}
+// ===== APP-11-26G  END =====
 
 /**
  * Parse a roster into [{last, first, mrn, room, flag}].
@@ -128,7 +162,7 @@ function roomFrom(rest) {
  */
 export function parseRoster(text) {
   const rows = [];
-  for (const line of String(text).split(/\r?\n/)) {
+  for (const line of joinCells(text).split(/\r?\n/)) {
     if (/medical professional|^\s*user:/i.test(line)) continue;
     const m = line.match(ROSTER_ROW);
     if (!m) continue;
