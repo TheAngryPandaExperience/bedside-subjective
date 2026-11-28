@@ -3,7 +3,7 @@
 
 import './version.js'; // sets self.BEDSIDE_VERSION
 import { parseRoster, parseVitals, matchVitals, formatVitals, checkRoster } from './parsers.js';
-import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, incisionExam, incisionSubjective, edemaExam, noteClashes, standingState, standingText, pendingStanding, stripRetapped, listLabel, roomParts, sortPatients, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
+import { renderTemplate, expandShortcut, patientLabel, fullNote, detailSentences, painPhrase, buildSummary, summaryLines, summaryFilename, carryForward, wordDiff, abxSentences, abxDayNumber, abxEndDate, abxState, abxName, nextSend, logLines, changedSinceSend, formatDate, varyWording, blankCount, nextBlank, unsentCount, bmSentence, parseBmDate, examLines, o2Sentence, o2Liters, guSentence, saysNoBreathingTrouble, orderedSentence, orderedItems, incisionExam, incisionSubjective, edemaExam, noteClashes, standingState, standingText, pendingStanding, stripRetapped, listLabel, roomParts, sortPatients, patientListLines, tapLines, chartEntry, clockMinutes, clockSpan, clockTotal, clock12 } from './note.js';
 import { getDay, saveDay, deleteDay, listDays, getSettings, saveSettings, purgeOld, requestPersistence, getAbx, saveAbx, exportAll, importAll, getCharts, saveCharts, getRosters, saveRosters, getClock, saveClock } from './store.js';
 import { fileToText } from './importers.js';
 import { makeDocx, DOCX_TYPE } from './docx.js';
@@ -31,6 +31,7 @@ let focusNext = false; // after switching building, scroll to the next patient n
 let lastReceipt = null; // APP-11-11: { id: day id, n, text, ok } - the computer's receipt for the send just made
 let unsent = []; // APP-11-11: other days on this phone with notes that were not sent: { date, building, n, never }
 let retrying = false; // APP-11-11
+let ptList = { open: false, room: true }; // APP-11-27A: the patient list made from the loaded patients (open = shown; room = with the room bracket)
 
 // A building's id never changes (its days are saved under it); its name can be renamed.
 const bname = (id) => (id ? settings.buildingNames?.[id] || id : '');
@@ -229,6 +230,7 @@ function renderDay() {
         <span class="meta">${[roomParts(p.room).unit, p.vitals ? 'vitals loaded' : ''].filter(Boolean).map(esc).join(' · ')}${activeAbx(p.mrn, day.date).length ? ' <span class="abx-tag">ABX</span>' : ''}${blankCount(p.text) ? ' <span class="abx-tag">___ to fill</span>' : ''}</span>
         <span class="status">${statusPill(p)}</span>
       </button>`).join('')}</div>
+      <div id="ptlist" style="margin-top:14px">${ptListHtml()}</div>
       <div style="margin-top:18px">
         <button class="ghost danger" data-act="del-day">Delete this day</button>
         <div id="del-day-confirm" class="banner" hidden>Delete all ${day.patients.length} patients and notes for ${esc(bn ? `${bn}, ` : '')}${esc(formatDate(day.date))} from this phone? Files already sent to your computer stay there.
@@ -2247,6 +2249,55 @@ function readSettingsForm() {
   };
 }
 
+// ===== APP-11-27A  START: "Make patient list" under the loaded patients =====
+// His request: "at the bottom of the loaded patient section I want a button that makes a list of the loaded patients.
+// Makes it into a docx or pdf file that I can copy and paste. Tap the button it make, then once it's made have a copy button".
+// The list is the patients on screen, in the order on screen, exactly as stored. Nothing is sent anywhere.
+const ptListLines = () => patientListLines(day, bname(day.building), ptList.room);
+const ptListName = () => `Patient list ${bname(day.building) || 'no building'} ${day.date}.docx`.replace(/[\\/:*?"<>|]/g, '_');
+
+function ptListHtml() {
+  if (!day.patients.length) return '';
+  if (!ptList.open) return '<button class="grow" data-act="ptlist-make" style="width:100%">Make patient list</button>';
+  const lines = ptListLines();
+  return `<div class="card" style="display:grid;gap:8px">
+    <div class="row" style="align-items:center"><b class="grow">Patient list</b><button class="ghost small" data-act="ptlist-close">Close</button></div>
+    <div class="row" style="align-items:center;flex-wrap:wrap"><span class="small muted">Lines:</span>
+      <button class="dpreset ${ptList.room ? 'on' : ''}" data-act="ptlist-room" data-v="1" style="min-height:36px;padding:4px 10px">With room</button>
+      <button class="dpreset ${ptList.room ? '' : 'on'}" data-act="ptlist-room" data-v="0" style="min-height:36px;padding:4px 10px">Without room</button></div>
+    <textarea id="ptlist-text" readonly rows="${Math.min(lines.length + 1, 14)}" class="mono" style="width:100%;font-size:.85rem;white-space:pre;overflow:auto">${esc(lines.join('\n'))}</textarea>
+    <div class="row" style="flex-wrap:wrap">
+      <button class="primary grow" data-act="ptlist-copy">Copy list</button>
+      <button class="grow" data-act="ptlist-docx">Save Word file</button>
+      ${navigator.canShare ? '<button class="grow" data-act="ptlist-share">Share Word file</button>' : ''}
+    </div>
+    <div class="small muted">${lines.length - 1} patient${lines.length === 2 ? '' : 's'}, in the order shown above. Copy puts the list on the clipboard so you can paste it anywhere.</div>
+  </div>`;
+}
+
+function ptListRedraw() {
+  const box = document.getElementById('ptlist');
+  if (box) box.innerHTML = ptListHtml();
+}
+
+async function ptListCopy() {
+  const text = ptListLines().join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`Patient list copied (${day.patients.length})`);
+  } catch {
+    const ta = document.getElementById('ptlist-text'); // no clipboard permission: select it so a long-press Copy works
+    if (ta) { ta.focus(); ta.select(); }
+    toast('Could not copy by itself. The list is selected - press and hold, then Copy.', 5000);
+  }
+}
+
+function ptListFile() {
+  const filename = ptListName();
+  return new File([makeDocx(ptListLines(), { title: filename.replace(/\.docx$/, '') })], filename, { type: DOCX_TYPE });
+}
+// ===== APP-11-27A  END =====
+
 function downloadText(filename, text, type = 'text/plain') {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type }));
@@ -2348,6 +2399,26 @@ app.addEventListener('click', async (e) => {
       await saveDay(day);
       toast(`Removed ${n - day.patients.length} patient${n - day.patients.length === 1 ? '' : 's'} with no note`);
       render();
+      break;
+    }
+    case 'ptlist-make': ptList.open = true; ptListRedraw(); document.getElementById('ptlist')?.scrollIntoView({ block: 'nearest' }); break; // APP-11-27A
+    case 'ptlist-close': ptList.open = false; ptListRedraw(); break;
+    case 'ptlist-room': ptList.room = b.dataset.v === '1'; ptListRedraw(); break;
+    case 'ptlist-copy': await ptListCopy(); break;
+    case 'ptlist-docx': {
+      const f = ptListFile();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(f);
+      a.download = f.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      toast(`Saved to Downloads: ${f.name}`, 4000);
+      break;
+    }
+    case 'ptlist-share': {
+      const f = ptListFile();
+      if (!navigator.canShare?.({ files: [f] })) { toast('This phone cannot share a file from here. Use Save Word file.', 4500); break; }
+      try { await navigator.share({ files: [f], title: f.name }); } catch { /* closed the share sheet */ }
       break;
     }
     case 'sort': { // APP-11-26F: put the list in this order; the numbers follow. Tap the same one again to stop keeping it sorted.

@@ -74,6 +74,17 @@ export function listLabel(p, i) {
   return `${i + 1}. ${roomTag(p)} ${p.last}, ${p.first} (${p.mrn}):`;
 }
 
+// ===== APP-11-27A  START: the loaded patients as a list to copy or save =====
+/** The lines of the patient list for one day, in the order on screen. First line: "<building> - <date> - N patients".
+ *  withRoom true: "1. [202-1] Mouse, Mickey (7961):" (as on the phone). false: "1. Mouse, Mickey (7961):" (as in the
+ *  file sent to the computer). Names, MRNs and rooms are written exactly as they are stored; nothing is added. */
+export function patientListLines(d, buildingName, withRoom = true) {
+  const n = d.patients.length;
+  const head = [buildingName, formatDate(d.date), `${n} patient${n === 1 ? '' : 's'}`].filter(Boolean).join(' - ');
+  return [head, ...d.patients.map((p, i) => (withRoom ? listLabel(p, i) : patientLabel(p, i)))];
+}
+// ===== APP-11-27A  END =====
+
 /** A copy of the list in the chosen order: 'name' (last, first), 'room' (room number, bed) or 'unit' (unit, room, bed).
  *  Patients with no room come last under 'room' and 'unit'. Anything else returns the list as it is. */
 export function sortPatients(list, by) {
